@@ -1,0 +1,32 @@
+{
+  "source": "auto",
+  "codes": [
+    "BTC-USDT",
+    "SOL-USDT",
+    "SPY.US",
+    "GLD.US"
+  ],
+  "start_date": "2023-01-01",
+  "end_date": "2026-06-29",
+  "interval": "1D",
+  "engine": "daily",
+  "initial_cash": 1000000,
+  "benchmark": "BTC-USDT",
+  "optimizer": null,
+  "optimizer_params": {},
+  "validation": {
+    "monte_carlo": {
+      "n_simulations": 1000
+    },
+    "bootstrap": {
+      "n_bootstrap": 1000,
+      "confidence": 0.95
+    },
+    "walk_forward": {
+      "n_windows": 4
+    }
+  },
+  "maker_rate": 0.0008,
+  "taker_rate": 0.001,
+  "funding_rate": 0.0
+}
