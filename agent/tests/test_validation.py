@@ -96,6 +96,27 @@ class TestMonteCarlo:
         result = monte_carlo_test(trades, 1_000_000)
         assert "error" in result
 
+    def test_bars_per_year_changes_actual_sharpe(self) -> None:
+        """actual_sharpe must scale with sqrt(bars_per_year) like every other
+        reported Sharpe for the same run — it previously always used a
+        hardcoded 252 regardless of the run's real annualization factor
+        (e.g. 365 for crypto sources), silently diverging from
+        metrics.csv's sharpe / bootstrap's observed_sharpe. See CLAUDE.md."""
+        trades = _make_trades([100, -50, 200, -30, 150, -80, 120, -40, 90, -20])
+        r_252 = monte_carlo_test(trades, 1_000_000, n_simulations=50, bars_per_year=252)
+        r_365 = monte_carlo_test(trades, 1_000_000, n_simulations=50, bars_per_year=365)
+        expected_ratio = (365 / 252) ** 0.5
+        assert r_365["actual_sharpe"] == pytest.approx(
+            r_252["actual_sharpe"] * expected_ratio, abs=1e-3
+        )
+
+    def test_default_bars_per_year_is_252(self) -> None:
+        """Backward compatibility: omitting bars_per_year keeps the old default."""
+        trades = _make_trades([100, -50, 200, -30, 150, -80, 120, -40, 90, -20])
+        r_default = monte_carlo_test(trades, 1_000_000, n_simulations=50)
+        r_explicit = monte_carlo_test(trades, 1_000_000, n_simulations=50, bars_per_year=252)
+        assert r_default["actual_sharpe"] == pytest.approx(r_explicit["actual_sharpe"])
+
     def test_reproducibility(self) -> None:
         trades = _make_trades([100, -50, 200, -30, 150, -80])
         r1 = monte_carlo_test(trades, 1_000_000, n_simulations=100, seed=42)
@@ -238,3 +259,18 @@ class TestRunValidation:
         result = run_validation(config, eq, trades, 1_000_000)
         assert "bootstrap" in result
         assert "monte_carlo" not in result
+
+    def test_monte_carlo_uses_run_bars_per_year(self) -> None:
+        """run_validation's bars_per_year (e.g. 365 for crypto) must reach
+        monte_carlo_test, not just bootstrap/walk_forward — otherwise
+        validation.json's monte_carlo.actual_sharpe silently disagrees with
+        metrics.csv's sharpe for the same crypto run. See CLAUDE.md."""
+        eq = _make_equity(100)
+        trades = _make_trades([100, -50, 200, -30, 150, -80, 120, -40, 90, -20])
+        config = {"validation": {"monte_carlo": {"n_simulations": 50}}}
+        result_252 = run_validation(config, eq, trades, 1_000_000, bars_per_year=252)
+        result_365 = run_validation(config, eq, trades, 1_000_000, bars_per_year=365)
+        expected_ratio = (365 / 252) ** 0.5
+        assert result_365["monte_carlo"]["actual_sharpe"] == pytest.approx(
+            result_252["monte_carlo"]["actual_sharpe"] * expected_ratio, abs=1e-3
+        )
