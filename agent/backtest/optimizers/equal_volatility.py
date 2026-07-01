@@ -42,6 +42,15 @@ def optimize(
     pos: pd.DataFrame,
     dates: pd.DatetimeIndex,
     lookback: int = 60,
+    respect_magnitude: bool = False,
 ) -> pd.DataFrame:
-    """Module-level entry: inverse-volatility-adjusted positions."""
-    return EqualVolatilityOptimizer(lookback=lookback).optimize(ret, pos, dates)
+    """Module-level entry: inverse-volatility-adjusted positions.
+
+    Args:
+        respect_magnitude: When True, scale each asset's weight by its
+            relative raw-signal magnitude instead of discarding it (see
+            ``BaseOptimizer``).
+    """
+    return EqualVolatilityOptimizer(
+        lookback=lookback, respect_magnitude=respect_magnitude
+    ).optimize(ret, pos, dates)

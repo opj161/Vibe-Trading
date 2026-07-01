@@ -87,6 +87,34 @@ class TestRiskParityOptimize:
         assert (result.iloc[61:, 0] >= 0).all(), "A should remain long"
         assert (result.iloc[61:, 1] <= 0).all(), "B should remain short"
 
+    def test_dt_own_return_excluded_from_its_own_weight(self) -> None:
+        """dt's own return requires dt's close, which isn't observed until
+        after the weight computed for dt has already been executed at dt's
+        open — so it must not affect dt's own weight (previously it did,
+        via an inclusive ``ret.loc[:dt]`` slice; see CLAUDE.md)."""
+        dates = pd.bdate_range("2025-01-01", periods=100)
+        codes = ["A", "B"]
+        rng = np.random.default_rng(5)
+        base_ret = pd.DataFrame(rng.normal(0, 0.01, (100, 2)), index=dates, columns=codes)
+        pos = pd.DataFrame(0.0, index=dates, columns=codes)
+        pos.iloc[70:, 0] = 1.0
+        pos.iloc[70:, 1] = 1.0
+
+        dt = dates[75]
+        dt_next = dates[76]
+        ret_outlier = base_ret.copy()
+        # Huge same-day outlier on B: only visible if the window leaks dt's
+        # own not-yet-observed return.
+        ret_outlier.loc[dt, "B"] = 5.0
+
+        opt = RiskParityOptimizer(lookback=60)
+        result_base = opt.optimize(base_ret, pos, dates)
+        result_outlier = opt.optimize(ret_outlier, pos, dates)
+
+        pd.testing.assert_series_equal(result_base.loc[dt], result_outlier.loc[dt])
+        # Sanity: the outlier does matter once it's legitimately in history.
+        assert not result_base.loc[dt_next].equals(result_outlier.loc[dt_next])
+
     def test_single_asset_unchanged(self) -> None:
         """Optimizer with 1 asset returns input unchanged."""
         dates = pd.bdate_range("2025-01-01", periods=100)
@@ -96,3 +124,58 @@ class TestRiskParityOptimize:
         opt = RiskParityOptimizer(lookback=60)
         result = opt.optimize(ret, pos, dates)
         pd.testing.assert_frame_equal(result, pos)
+
+    def test_respect_magnitude_defaults_off_and_matches_sign_only(self) -> None:
+        """Default (respect_magnitude=False) is unchanged from sign-only behavior."""
+        dates = pd.bdate_range("2025-01-01", periods=100)
+        codes = ["A", "B"]
+        rng = np.random.default_rng(3)
+        ret = pd.DataFrame(rng.normal(0, 0.02, (100, 2)), index=dates, columns=codes)
+        pos = pd.DataFrame(0.0, index=dates, columns=codes)
+        pos.iloc[60:, 0] = 1.0
+        pos.iloc[60:, 1] = -0.3  # different magnitude, same vol -> would differ if respected
+
+        sign_only = RiskParityOptimizer(lookback=60).optimize(ret, pos, dates)
+        explicit_off = RiskParityOptimizer(lookback=60, respect_magnitude=False).optimize(
+            ret, pos, dates
+        )
+        pd.testing.assert_frame_equal(sign_only, explicit_off)
+
+    def test_respect_magnitude_scales_weight_by_conviction(self) -> None:
+        """respect_magnitude=True lets a stronger raw signal get a larger weight."""
+        dates = pd.bdate_range("2025-01-01", periods=100)
+        codes = ["A", "B"]
+        # Identical volatility for A and B so risk-parity alone would split 50/50;
+        # any weight skew must come from the magnitude scaling.
+        rng = np.random.default_rng(3)
+        shared_noise = rng.normal(0, 0.02, 100)
+        ret = pd.DataFrame({"A": shared_noise, "B": shared_noise}, index=dates)
+        pos = pd.DataFrame(0.0, index=dates, columns=codes)
+        pos.iloc[60:, 0] = 1.0  # full-conviction long
+        pos.iloc[60:, 1] = -0.3  # weaker-conviction short
+
+        result = RiskParityOptimizer(lookback=60, respect_magnitude=True).optimize(
+            ret, pos, dates
+        )
+
+        # Signs still preserved...
+        assert (result.iloc[61:, 0] >= 0).all()
+        assert (result.iloc[61:, 1] <= 0).all()
+        # ...but the higher-conviction long now outweighs the weaker short,
+        # unlike the equal-vol 50/50 split sign-only mode would produce.
+        assert (result.iloc[61:, 0].abs() > result.iloc[61:, 1].abs()).all()
+
+    def test_respect_magnitude_zero_signal_falls_back_gracefully(self) -> None:
+        """All-active-signals-near-zero at a date doesn't crash (division guard)."""
+        dates = pd.bdate_range("2025-01-01", periods=100)
+        codes = ["A", "B"]
+        rng = np.random.default_rng(5)
+        ret = pd.DataFrame(rng.normal(0, 0.02, (100, 2)), index=dates, columns=codes)
+        pos = pd.DataFrame(0.0, index=dates, columns=codes)
+        pos.iloc[60:, 0] = 1.0
+        pos.iloc[60:, 1] = -1.0
+
+        result = RiskParityOptimizer(lookback=60, respect_magnitude=True).optimize(
+            ret, pos, dates
+        )
+        assert not result.isna().any().any()

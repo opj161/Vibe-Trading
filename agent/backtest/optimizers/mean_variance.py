@@ -62,8 +62,15 @@ def optimize(
     dates: pd.DatetimeIndex,
     lookback: int = 60,
     risk_free: float = 0.0,
+    respect_magnitude: bool = False,
 ) -> pd.DataFrame:
-    """Module-level entry: max-Sharpe-adjusted positions."""
+    """Module-level entry: max-Sharpe-adjusted positions.
+
+    Args:
+        respect_magnitude: When True, scale each asset's weight by its
+            relative raw-signal magnitude instead of discarding it (see
+            ``BaseOptimizer``).
+    """
     return MeanVarianceOptimizer(
-        lookback=lookback, risk_free=risk_free
+        lookback=lookback, risk_free=risk_free, respect_magnitude=respect_magnitude
     ).optimize(ret, pos, dates)

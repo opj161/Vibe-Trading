@@ -18,15 +18,29 @@ class BaseOptimizer(ABC):
     - active asset selection
     - rolling window slicing and sanity checks
     - covariance matrix + NaN checks
-    - applying weights while preserving signal sign
+    - applying weights while preserving signal sign (default), or scaling
+      those weights by each signal's relative magnitude when
+      ``respect_magnitude=True``
+
+    By default the optimizer keeps only the *sign* of a signal-engine's raw
+    position and replaces the magnitude entirely with its own risk-based
+    weight — a signal engine expressing relative conviction across assets
+    (e.g. a long/short tilt) has no effect unless ``respect_magnitude=True``
+    is passed, in which case the risk-based weight is scaled by each active
+    asset's share of total |signal| magnitude before renormalizing.
 
     Attributes:
         lookback: Lookback days for covariance / mean.
+        respect_magnitude: When True, scale the risk-based weight by each
+            asset's relative signal magnitude instead of ignoring it.
         params: Extra keyword args for subclasses.
     """
 
-    def __init__(self, lookback: int = 60, **kwargs: Any) -> None:
+    def __init__(
+        self, lookback: int = 60, respect_magnitude: bool = False, **kwargs: Any
+    ) -> None:
         self.lookback = lookback
+        self.respect_magnitude = respect_magnitude
         self.params = kwargs
 
     # ------------------------------------------------------------------
@@ -59,7 +73,9 @@ class BaseOptimizer(ABC):
             if not active or i < self.lookback:
                 continue
 
-            window = ret.loc[:dt, active].tail(self.lookback)
+            # Exclude dt's own return: it requires dt's close, which isn't
+            # observed yet when this weight is applied at dt's open.
+            window = ret.loc[:dt, active].iloc[:-1].tail(self.lookback)
             if len(window) < max(self.lookback // 2, 5):
                 continue
 
@@ -71,11 +87,45 @@ class BaseOptimizer(ABC):
             if weights is None or len(weights) != len(active):
                 continue
 
+            if self.respect_magnitude:
+                weights = self._scale_by_magnitude(pos, dt, active, weights)
+
             for j, c in enumerate(active):
                 sign = np.sign(pos.at[dt, c])
                 result.at[dt, c] = sign * weights[j]
 
         return result
+
+    def _scale_by_magnitude(
+        self,
+        pos: pd.DataFrame,
+        dt: Any,
+        active: List[str],
+        weights: np.ndarray,
+    ) -> np.ndarray:
+        """Scale risk-based weights by each asset's relative signal magnitude.
+
+        Args:
+            pos: Raw signal positions.
+            dt: Current date.
+            active: Active asset codes at ``dt``.
+            weights: Risk-based weights (sum to 1) from ``_calc_weights``.
+
+        Returns:
+            Weights rescaled by relative |signal| magnitude, renormalized to
+            sum to 1 (falls back to the unscaled ``weights`` if every active
+            signal is ~0, which should not happen since ``active`` already
+            filters on magnitude > 1e-9).
+        """
+        magnitudes = np.array([abs(pos.at[dt, c]) for c in active])
+        mag_total = magnitudes.sum()
+        if mag_total <= 1e-12:
+            return weights
+        combined = weights * (magnitudes / mag_total)
+        combined_total = combined.sum()
+        if combined_total <= 1e-12:
+            return weights
+        return combined / combined_total
 
     # ------------------------------------------------------------------
     # Hooks

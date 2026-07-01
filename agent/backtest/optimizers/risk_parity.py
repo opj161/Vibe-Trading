@@ -46,6 +46,16 @@ def optimize(
     pos: pd.DataFrame,
     dates: pd.DatetimeIndex,
     lookback: int = 60,
+    respect_magnitude: bool = False,
 ) -> pd.DataFrame:
-    """Module-level entry: risk-parity-adjusted positions."""
-    return RiskParityOptimizer(lookback=lookback).optimize(ret, pos, dates)
+    """Module-level entry: risk-parity-adjusted positions.
+
+    Args:
+        respect_magnitude: When True, scale each asset's risk-parity weight
+            by its relative raw-signal magnitude instead of discarding it
+            (see ``BaseOptimizer``). Set via config.json
+            ``optimizer_params: {"respect_magnitude": true}``.
+    """
+    return RiskParityOptimizer(
+        lookback=lookback, respect_magnitude=respect_magnitude
+    ).optimize(ret, pos, dates)
