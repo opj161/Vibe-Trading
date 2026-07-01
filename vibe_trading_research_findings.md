@@ -1258,3 +1258,175 @@ DOGE is a plausible SOL-adjacent candidate (a genuinely different, explosive-ral
 ### 41.4 Updated dead-end assessment
 
 Three angles reconsidered from §40.3's "deferred, not closed" list have now been tested, all confirming rather than overturning §40's recommendation. BTC+DOGE sharpened the boundary condition on when the chop-frequency mechanism helps. Perpetual futures confirmed two reassuring findings (cheaper fees, low funding sensitivity). The joint bear-market/venue test confirmed both robustness claims hold together, with 2024 on Binance being the single most dramatic year-level risk reduction found anywhere in this log (-43.6% → -11.7%). **No new angle has emerged that changes §40's core recommendation** (Z4 for drawdown-focus, Z4+Z8 for return/Sharpe-focus). The genuinely remaining open items are narrower than §40.3's original list: (a) a rigorous perpetual-vs-spot isolation controlling for bar-boundary offset, needing new data-loader infrastructure, not just new backtests; (b) re-plumbing Z4 into the real optimizer rather than the hand-rolled ERC replica, an implementation-quality task rather than a research question. Both are legitimate future work; neither changes the current recommendation. At this point, every combination of {asset pair, venue, time window, funding regime, statistical rigor tool} that could be tested with the existing platform and existing data has been tested at least once, several multiple times with joint/combined checks. This is the point at which continuing would mean either re-testing already-confirmed combinations or building genuinely new infrastructure (a different, larger undertaking) — a real, considered dead end.
+
+---
+
+## 42. Round 28 (user-directed): stress-testing an external "is this risk-engineering, not alpha?" critique
+
+A third party reviewed this strategy from the outside (design description only, no code access) and raised a specific, well-posed challenge: the edge might be entirely explained by well-known risk-engineering effects (vol-targeting, risk-parity) rather than genuine timing skill in the EMA(10,30) signal itself, and offered a decomposition-ladder methodology to test it. Most of the review's individual concerns were already resolved by this log or by direct inspection of the live code before any new backtest was run:
+
+- **True covariance-aware equal-risk-contribution, not naive inverse-vol** — confirmed by reading `agent/backtest/optimizers/risk_parity.py` directly: Spinu (2013)-style ERC with Newton refinement over the full covariance matrix, exactly what Z4's hand-rolled replica also implements (§32-33).
+- **Same-close lookahead** — structurally impossible; `base.py`'s `_align` shifts every signal by exactly one bar before execution (independently confirmed via the technical-overview scan and via reverse-engineering `_align`'s semantics in §33.1).
+- **Vol-targeting over-levering right before a crash** (the Moreira/Muir failure mode) — structurally impossible here: `VOL_SCALAR_MAX = 1.0` in the signal engine caps per-asset sizing at "fully invested, never more," and `base.py`'s own final normalization (`scale = pos.abs().sum(axis=1).clip(lower=1.0)`, already found in §34.1) makes >100% gross notional impossible regardless of how low realized vol reads.
+- **Trend-strength/ADX entry filters, ensembles of trend lookbacks on a broad universe, universe expansion** — all independently tested and rejected already (§10 Variant M, §22 Variant T, §31/§33.7/§36 Y1/Y2/Z5/Z6/Z10).
+- **Realistic fees/funding** — already the largest correction pass in this log (§18, §28).
+
+Five genuinely new, not-yet-asked questions remained and were executed directly (BTC+SOL, same train 2023-01-01→2025-06-30 / OOS 2025-07-01→2026-06-30 windows and fee/funding config as Z4 throughout).
+
+### 42.1 Tail-risk diagnostics (no new backtests — existing artifacts only)
+
+Every earlier section reported only Sharpe and max drawdown. Computed CVaR/expected-shortfall, worst-single-day tail, and max-drawdown-*duration* directly from Z4's and L's existing `equity.csv` artifacts (sanity-checked: recomputed max drawdown matched the previously-reported figures to within rounding on all four runs).
+
+| Run | Daily CVaR95 / CVaR99 | Worst single day | Max DD duration |
+|---|---:|---:|---|
+| Z4 train (n=912) | -4.68% / -7.17% | -9.28% | 428 days (peak 2023-12-24 → recovered 2025-02-24) |
+| Z4 OOS (n=364) | -3.38% / -4.97% | -5.59% | 126 days (peak 2026-02-23 → **not recovered by window end**) |
+| L train (n=912) | -6.30% / -8.89% | -11.67% | 368 days (peak 2024-03-30 → recovered 2025-04-02) |
+| L OOS (n=364) | -4.83% / -6.89% | -7.50% | 126 days (peak 2026-02-23 → **not recovered by window end**) |
+
+Z4's tail metrics are meaningfully better than L's on every measure, consistent with the whole Z4-over-L case. One honest, previously-unreported nuance: Z4's *max-drawdown-duration* on the train window (428 days) is actually **longer** than L's (368 days), despite Z4's shallower max drawdown (-33.0% vs -46.7%) — smaller drawdown does not imply faster recovery here; report both, not just depth. Both OOS drawdowns are **right-censored** — neither strategy had recovered from its worst OOS drawdown by the window's fixed end date (2026-06-30, inside the "June 2026 decline" documented throughout this log), so the 126-day figure is a lower bound on true recovery time for both, not a completed measurement.
+
+### 42.2 Benchmark decomposition ladder — the central "alpha vs. risk engineering" question, answered directly
+
+Built four new rungs, each isolating one mechanism, using BTC+SOL and Z4's exact fee/funding config. OOS figures are manually sliced to the true frozen window (2025-07-01 onward), matching this log's standing methodology.
+
+| Rung | Mechanism | Train return/Sharpe/DD | OOS return/Sharpe/DD |
+|---|---|---:|---:|
+| 1 | Naive 50/50 buy-and-hold, no signal, no allocation | 876.7% / 1.63 / -53.6% | **-48.9% / -0.99 / -63.7%** |
+| 2 | Always-long, vol-target + covariance-ERC allocation, no signal | 555.5% / 1.65 / -41.3% | **-48.2% / -1.06 / -60.7%** |
+| 3 | EMA(10,30) signal, equal-weight, no vol-target, no ERC | 581.8% / 1.61 / -40.8% | **33.4% / 0.99 / -22.6%** |
+| 4 | Signal + per-asset vol-target, no ERC | 461.9% / 1.58 / -38.4% | 21.7% / 0.83 / -23.9% |
+| 5 | Z0: signal + vol-target + ERC (§33.2 corrected replica) | 397% / 1.445 / -44.4% | 53.8% / 1.18 / -29.1% |
+| 6 | Z4: rung 5 + chop-frequency scalar (§33.3) | 363.4% / 1.641 / -33.0% | 48.4% / 1.36 / -19.2% |
+| *(L, real optimizer, reference)* | | *481% / 1.48 / -46.7%* | *47.8% / 1.06 / -31.4%* |
+
+**This settles the central question cleanly.** In the true OOS window, buy-and-hold — with or without vol-targeting and covariance-aware risk-parity allocation — **loses money** (Sharpe ≈ -1.0, rungs 1-2 are barely distinguishable from each other). It is only once the EMA(10,30) timing signal is added (rung 3) that the strategy becomes profitable at all: Sharpe flips from -1.06 to +0.99 in the exact same window, same assets, same fee model. **Risk engineering alone is not just insufficient here, it is negative; the signal is what turns a losing OOS book into a winning one.** This directly confirms one specific claim from the external assessment too, worth stating precisely: BTC/SOL's ~0.7-0.8 correlation means a two-asset "risk-parity" portfolio has a large shared crypto-beta component, so vol-targeting/ERC allocation *alone* (rungs 1→2) provides little protection in a period where both assets decline together — exactly what rungs 1-2's near-identical, deeply negative OOS Sharpes show.
+
+The subsequent rungs are genuinely more nuanced and reported exactly as found, not smoothed over: per-asset vol-targeting alone (rung 3→4) is roughly neutral-to-slightly-negative in this specific OOS window (Sharpe 0.99→0.83); covariance-ERC allocation (rung 4→5) then adds substantial OOS value (0.83→1.18) while *costing* return/Sharpe on the train window (461.9%/1.58 → 397%/1.445) — an honest illustration of §25.1's "risk-parity is a risk-efficiency lever, not an alpha lever" finding cutting both ways depending on regime, not a one-directional improvement. The chop-frequency scalar (rung 5→6) then adds its already-established, independently-validated improvement on top of an *already-positive* signal (§33.3) — this ladder shows that improvement is additive to real signal value, not a substitute for the signal being absent.
+
+### 42.3 Signal-value isolation via a block-bootstrap shuffled-direction permutation test — the decisive result
+
+Designed a sharper test than the static "always-long" rungs above: hold Z4's entire vol-target + ERC + chop-frequency-scalar mechanics completely fixed, but replace the real EMA(10,30) direction sequence with a block-bootstrap-shuffled version (block length 10 days, matching `CHOP_LOOKBACK`'s timescale) that preserves each asset's time-long/time-short/time-flat share and flip-frequency distribution while destroying any relationship between direction and subsequent returns. If Z4's edge were purely the risk-engineering stack, shuffled-direction variants — which still deploy the *same* vol-target/ERC/chop-scalar machinery, just pointed in randomized directions — should perform similarly to the real signal on average.
+
+**A genuine platform-mechanics discovery, found while building this and worth recording for any future work on this codebase**: an initial hand-rolled approximate-return engine (weight × next-day-return, minus a turnover-cost estimate) diverged wildly from the real platform's reported Sharpe (0.34 vs. Z4's actual 1.641) even *after* the position weights themselves were validated bit-for-bit correct against `positions.csv`. Root-caused by reading `base.py`'s `_rebalance`/`_execute_bars` directly: **the engine only opens or closes a position on a direction-sign change; while the sign stays the same, the position's *quantity* is frozen at whatever it was on entry day, regardless of how much the target-weight formula (vol-scalar, chop-scalar, ERC weight) would say to resize it on subsequent days.** Continuously-varying "target weight" signal engines like Z4/L only actually matter *at the moment a new position opens*; every recomputed value during the hold is silently inert until the next flip. This is a materially different mechanic from "daily rebalance to today's exact target weight" (which is what a naive reader of `SignalEngine.generate()`'s contract might assume), and it is why a position entered early in a sustained trend (like SOL's 2023-2024 rally) captures the trend's full linear-PnL compounding rather than being progressively trimmed back toward a constant weight. Given this, the permutation test was run through the **real platform engine** (via direct `runner.py` invocation per this log's own established out-of-band-testing pattern, §14), not a hand-rolled approximation, to avoid this exact class of error.
+
+**Method**: 60 block-shuffled direction sequences, each baked into its own `signal_engine.py` (with Z4's exact vol-target/ERC/chop-scalar code, unchanged) and run through the genuine backtest engine on the train window.
+
+| | Result |
+|---|---|
+| Real EMA(10,30) direction | Sharpe **1.641**, return 363.4% |
+| Null distribution (60 shuffled seeds) | mean Sharpe 0.021, std 0.622, p5 -0.784, p95 1.260, max 1.833 |
+| Seeds with Sharpe ≥ real | **2 of 60** |
+| **Permutation p-value** | **0.033** |
+| Seeds beating BTC buy-and-hold's raw return (544%) | **0 of 60** |
+| Seeds with any positive Sharpe at all | 28 of 60 (46.7%) |
+
+**This is the single most direct, decisive answer to the external assessment's central challenge in this whole round.** Holding the entire risk-engineering stack byte-for-byte identical and only scrambling *when* the signal points long vs. short, real EMA timing beats 58 of 60 random-direction draws and is the only one of 61 total direction sequences (60 shuffled + 1 real) to beat buy-and-hold's raw return at all. The risk-management machinery cannot manufacture this result on its own; the timing information in the EMA(10,30) crossover is doing real, non-random work.
+
+### 42.4 Dense EMA parameter grid — is (10,30) an overfit "island"?
+
+Tested (8,24), (10,30) [=Z4], (12,36), (15,45), (20,60), (30,90), holding every other part of Z4's stack fixed, train window only (no OOS confirmation needed since (10,30) already *is* the platform's existing, independently OOS-validated champion).
+
+| Pair | Sharpe |
+|---|---:|
+| (8,24) | 1.492 |
+| **(10,30) [Z4]** | **1.642** |
+| (12,36) | 1.434 |
+| (15,45) | 1.177 |
+| (20,60) | 1.219 |
+| (30,90) | 1.081 |
+
+(10,30) decisively wins, with performance degrading in a reasonably smooth, monotonic-ish band on both sides — a real, single, sharply-defined peak rather than an isolated spike surrounded by noise (contrast the bar-boundary-offset curve, §15, which swings through a sign change). Applying this log's own DSR correction (§19 methodology) to this 6-point search: N=6, V(SR_annual)=0.046, expected max SR under the null = 0.28 (annualized); best trial T=912, skew=1.195, kurtosis=11.132; **naive PSR 99.66%, DSR 98.77%.** This is a *much* smaller discount than either the 13-variant strategy-design search (91.7%, §28.5) or the 6-offset bar-boundary search (75.5%, §19.2) — EMA parameter choice, while real and worth reporting honestly, carries substantially less overfitting risk than either of those two searches.
+
+### 42.5 Cash-yield realism gap — real, previously unquantified, and one-directional
+
+Checked how much of Z4's capital sits undeployed (average `1 - gross_exposure` from `positions.csv`) and what a modest idle-cash yield would add, given the platform models zero return on uninvested capital.
+
+| | Avg gross exposure | Avg idle fraction | at 3%/yr | at 4%/yr | at 5%/yr |
+|---|---:|---:|---:|---:|---:|
+| Z4 train (912 days) | 47.3% | 52.7% | +3.95pp | +5.27pp | +6.58pp |
+| Z4 OOS (364 days) | 44.7% | 55.3% | +1.93pp | +2.57pp | +3.22pp |
+
+This is a **larger and more consequential gap than assumed going in** — average idle capital is roughly half of the book, not "rarely idle" as `VOL_SCALAR_MIN=0.25` might suggest (that floor bounds *per-asset* sizing, not combined two-asset gross exposure, which is usually well under 100% under ERC allocation). At a realistic ~3-4%/yr idle-cash yield (real stablecoin lending/staking products exist at these rates), this adds a real, non-trivial ~2-5pp of cumulative return that the platform currently credits nowhere. Important to state the direction correctly: **this is a one-directional gap that makes the backtest more conservative than reality, not less** — the strategy's real-world total return is probably modestly *better* than reported, never worse, since idle capital earning literally 0% is the pessimistic assumption already baked into every number in this log.
+
+### 42.6 Net effect on the champion recommendation
+
+**No change to the recommendation** (§40.2: Z4 for drawdown-focus, Z4+Z8 for return/Sharpe-focus) — this round was a validation/stress-test pass, not a design search, and it strengthens rather than weakens the existing case. Net new findings: (1) the strategy's edge is real timing information, not risk-engineering alone (§42.2-42.3, the two most decisive results); (2) (10,30) is a genuine, DSR-robust peak, not an overfit spike (§42.4); (3) two honest, previously-unreported nuances now on record — drawdown *duration* doesn't always track drawdown *depth* (§42.1), and the backtest's zero-yield cash assumption is conservative, not neutral (§42.5); (4) a genuine platform-mechanics fact worth remembering for any future signal-engine work on this codebase — continuously-varying target-weight signals only take effect at entry, frozen until the next direction flip (§42.3).
+
+---
+
+## 43. Round 29 (user-directed): chasing the entry-locked-sizing discovery and searching for new profitable strategies
+
+§42.3's platform-mechanics discovery (position size is frozen at entry until the next direction flip, universal across every engine on this platform) raised a specific, testable hypothesis: several past rejections (X1, Z9, O/P/Q) assumed continuous reweighting was actually happening and never got a fair test of that assumption. This round built the missing capability, used it, and separately searched for genuinely new profitable strategies outside this log's crypto/EMA-trend scope. Six items, run in the order below.
+
+### 43.1 Extending the frozen OOS window: not yet actionable
+
+§42.1 found both Z4's and L's worst OOS drawdown right-censored (not recovered by the window's fixed 2026-06-30 end date). Checked whether more data exists to extend into: **no** — the platform's current date is 2026-07-01 and OKX's own daily candles only go through 2026-06-29. There is nothing to extend into yet; this is a "revisit as calendar time passes" item, not a dead end.
+
+### 43.2 Built genuine mid-hold position resizing — a real, opt-in platform capability
+
+Confirmed by exhaustive search (`grep` across every engine file) that no engine overrides `_rebalance()` and no add/reduce/reverse helper exists anywhere on this platform — the technical overview's "open, add, reduce, reverse, or close positions" description does not match the actual code for any engine, crypto or otherwise. Implemented `config["rebalance_threshold"]` (a new, opt-in, backward-compatible capability in `agent/backtest/engines/base.py`): when set, `_rebalance()` can now add-to or reduce an already-open, same-direction position once its target weight drifts from the position's current implied weight by more than the threshold — blending cost basis on adds, realizing partial P&L on reduces, both computed from existing engine hooks (`_calc_margin`, `_calc_pnl`, `_calc_raw_size`, `calc_commission`, `apply_slippage`). Absent/`None` (the default) preserves the original entry-locked behavior byte-for-byte — verified directly: re-running an identical config with the flag removed reproduced Z4's original Sharpe to the 7th decimal (1.6408630118201295 both times). 10 new unit tests cover the resize arithmetic in isolation; the full suite (4,615 tests) passes with zero regressions. Known, disclosed limitation: partial resizes correctly adjust capital/equity (so Sharpe/return/drawdown are accurate) but are not logged as separate `TradeRecord` entries — trade-level attribution reflects only a position's final segment at full close, acceptable for the equity-curve-based research questions this round asked, not for production trade-attribution reporting.
+
+### 43.3 Re-testing X1, Z9, and Z4 itself with real continuous resizing — a decisive, and reassuring, negative result
+
+Re-ran Z4, Z9 (§35, conviction-weighted split), and X1 (§30, vol-double-counting ablation) with `rebalance_threshold: 0.10` added, otherwise byte-identical configs, through the real engine.
+
+| Variant | Window | Baseline (entry-locked) | With continuous resizing (threshold 0.10) |
+|---|---|---:|---:|
+| Z4 | train | 363.4% / 1.641 / -33.0% | **34.8% / 0.551 / -35.7%** |
+| Z4 | OOS | 48.4% / 1.36 / -19.2% | **-10.5% / -0.326 / -24.6%** |
+| Z9 | train | 317% / 1.581 / -36.9% (§35.2) | **19.2% / 0.384 / -38.9%** |
+| X1 | train | 612% / 1.54 / -48.0% (§30) | **196.5% / 1.076 / -47.6%** |
+| X1 | OOS | 43.6% / 1.00 / -32.2% (§30) | **-0.45% / 0.185 / -31.4%** |
+
+**Continuous resizing is decisively, consistently harmful** — not a wash, a collapse, across three independent designs and both windows tested. Root-caused, not just observed: SOL's own 10-day realized volatility rose steadily through its 2023-2024 rally (3.2% → 3.5% → 5.1% over the window), so a vol-target formula recomputed continuously would trim the position size exactly as the trend accelerated — directly verified by comparing equity growth over that specific rally window with resizing on vs. off: **+185.7% (entry-locked) vs. only +26.6% (continuously resized)**, the single clearest illustration of the mechanism in this whole log.
+
+**This corrects a specific hypothesis raised in the previous conversation turn, and the correction is worth stating plainly**: the entry-locked-sizing "gap" identified in §42.3 is not a limitation that was silently costing performance — it is a quiet, accidental feature. Once a position opens early in a strengthening trend, freezing its size protects the position from being trimmed back down as realized volatility rises during the trend's own strongest stretch, which is exactly the mechanism that let this strategy capture SOL's outsized 2023-2024 rally in the first place. This is mechanistically the same lesson as Variant F's ATR trailing-stop rejection (§2, round 1) and the broader §25.2 finding ("the whipsaw isn't a bug sitting next to the edge, it's the same mechanism that catches the big trend early") — now confirmed through a completely different, more subtle mechanism (continuous position-*sizing* responsiveness, not stop-losses or entry filters), extending the log's signal/responsiveness-space rejection count from 11 to effectively 14 (X1, Z9, and Z4-with-resizing all failed this specific test). **Conclusion: do not adopt `rebalance_threshold` for the champion.** The capability is now genuinely available on this platform (a legitimate future tool for other strategies where continuous responsiveness might actually help), but this specific strategy family should stay on the default entry-locked behavior.
+
+### 43.4 Recalibrating Z8's vol-target given the idle-capital finding — clean negative result
+
+§42.5 found ~50% average idle capital in Z4, motivating a check of whether Z8's `TARGET_PORTFOLIO_ANNUAL_VOL=0.35` was leaving return on the table. Tested 0.45 and 0.55 against the original, train window only (both would need to beat the original before an OOS test is warranted, per this log's standing discipline).
+
+| Target vol | Return | Sharpe | Max DD |
+|---|---:|---:|---:|
+| 0.35 (original, §34.3) | 441% | 1.621 | -37.2% |
+| 0.45 | 432.7% | 1.576 | -38.8% |
+| 0.55 | 428.3% | 1.550 | -39.1% |
+
+**Both alternatives underperform the original on every metric.** The idle-capital headroom identified in §42.5 does not translate into a free improvement via simply raising the overlay's target — Z8's original calibration (chosen as "close to Z4's own observed realized vol, a defensible non-arbitrary anchor," §34.2) turns out to already sit at a good point, not merely a reasonable starting guess. Neither alternative proceeds to OOS confirmation.
+
+### 43.5 Cross-asset-class trend sleeve (SPY + GLD) — the crypto recipe does not generalize, a decisive and informative negative
+
+Applied Z4's exact framework (EMA(10,30) direction + tilt, per-asset vol-target, 2-asset closed-form ERC, chop-frequency scalar) unmodified in structure to SPY (US equity) + GLD (gold) via `yfinance`/`GlobalEquityEngine`. Only `TARGET_DAILY_VOL` was recalibrated (0.008 vs. crypto's 0.025) — not tuned to results, just matched to this asset class's own typical realized daily volatility (SPY/GLD run ~0.8-1.2%/day vs. BTC/SOL's ~2-4%), since leaving it at 2.5% would permanently clip the per-asset vol scalar to its ceiling every day, silently disabling vol-targeting rather than genuinely testing it.
+
+**Same 2023-2025/2025-2026 windows as the crypto work:**
+
+| Window | Return | Sharpe | Max DD | Buy-and-hold (SPY) |
+|---|---:|---:|---:|---:|
+| Train (2023-01-01→2025-06-30) | 6.1% | 0.51 | -5.4% | +62.2% |
+| OOS (sliced, 2025-07-01→2026-06-30) | 5.8% | 1.264 | -2.5% | +20.9% |
+
+The strategy badly underperforms simple buy-and-hold on raw return in both windows — expected, not surprising: 2023-2026 was a strong, low-volatility US equity bull run, the textbook-worst regime for a trend/whipsaw-prone system relative to buy-and-hold. Its own standalone risk-adjusted profile is genuinely decent in isolation (Sharpe ~1.2-1.3, drawdown only -2.5% to -5.4%), so this alone doesn't settle whether the recipe "works" on equities — the short sample never tested it against a real equity bear market, the same trap this log's own crypto work caught itself in once already (§26, extending BTC/SOL's original ~2023-onward sample to include 2018/2022).
+
+**Extended window, 2005-01-01→2025-06-30 (includes the 2008 GFC, 2020 COVID crash, and 2022 bear market)**: return **-13.3%** (loses money outright over 20 years), Sharpe **-0.087**, 706 trades, win rate 30%, profit factor 0.91 — against SPY buy-and-hold's +413.6% over the same span. **This settles it, decisively and negatively.** Unlike crypto's extended-window test (§26, which *strengthened* the case by confirming profitability through real bear markets), the equity/gold extension does the opposite: even across three genuine, different crises, the crypto-validated recipe loses money.
+
+**Why, mechanistically**: per §25.1-25.2, this strategy's edge comes from "catching a strong multi-week/multi-month trend and staying in it" — and crypto's trend magnitudes (SOL's single 320% 91-day trade) are qualitatively different from anything a fast EMA(10,30) signal captures in equities or gold, even across real crises, which for equities tend to be sharper and faster (V-shaped) rather than the sustained, multi-quarter moves this signal speed is built to catch. **This is a genuinely important scope-correction**: the validated recipe is not a generically "good CTA system" — a real part of its success is tied to crypto's own outsized-trend, high-volatility character, not a universal trend-following truth. A legitimately new equity/gold strategy would need its own signal-speed calibration (standard CTA practice uses much slower lookbacks, e.g. 50/200-day, for macro assets, for exactly this reason) and its own full train/OOS validation arc — a new research thread, not a quick reuse of what's already validated for crypto.
+
+### 43.6 Genuine leverage on perpetuals — confirms the textbook expectation, no free lunch
+
+Tested Z4's mechanics on genuine Hyperliquid perpetuals (`BTC-USDC:USDC`, `SOL-USDC:USDC`, `CCXT_EXCHANGE=hyperliquid`, perpetual-appropriate fees per §41.2's research: `maker_rate=0.0002, taker_rate=0.0005`, near-zero funding `0.00003`) at `leverage=1.0` (control, isolating the venue from OKX by holding it constant) and `leverage=1.5`.
+
+| Leverage | Return | Sharpe | Max DD |
+|---|---:|---:|---:|
+| 1.0 (control) | 313.6% | 1.441 | -37.1% |
+| 1.5 | 507.4% | 1.454 | -45.2% |
+
+Return scales up ~62% relative, drawdown worsens ~22% relative, and **Sharpe is essentially unchanged** (+0.9% relative — within noise of a roughly-proportional scaling, exactly the textbook result for applying uniform leverage to an already-constructed strategy). **Confirms, rather than discovers, the standard expectation**: leverage here is a risk/return dial for whoever wants more absolute return and can tolerate proportionally more drawdown — not a source of risk-adjusted improvement. No further leverage grid points tested; the relationship is well-understood theoretically and this single test confirms it holds empirically for this specific strategy, which is what was actually in question.
+
+**Not pursued further this round, given scope**: a full Alpha Zoo cross-sectional factor scan (an entirely untouched, equity-focused research surface — legitimate, high-effort future work, not a quick extension) and a holistic CSCV/PBO pass across the complete E→K→L→Z0→Z4→Z8 decision chain (only decision-relevant before a genuine real-capital allocation, not a research-value item on its own).
+
+### 43.7 Net effect on the champion recommendation and on future research priorities
+
+**No change to the recommendation** (Z4 for drawdown-focus, Z4+Z8 for return/Sharpe-focus) — every test this round either confirmed existing conclusions more rigorously (§43.3's resize test, §43.6's leverage test) or closed off a specific, well-motivated new avenue with a clean answer (§43.4's Z8 recalibration, §43.5's cross-asset generalization). The single most valuable finding is §43.3: it directly answers the question raised at the end of the previous conversation turn, and the answer is the opposite of what was hypothesized — entry-locked sizing helps this strategy, it doesn't limit it. **For anyone extending this research further**: the crypto-specific recipe should not be assumed to transfer to other asset classes without its own re-validation (§43.5); genuine leverage is available and well-behaved but doesn't create risk-adjusted improvement on its own (§43.6); the two genuinely unexplored, potentially high-value surfaces on this platform remain the Alpha Zoo factor system and a properly-recalibrated (slower-signal) macro/equity trend design — both real, both bigger undertakings than anything attempted this round.
+
+**External research dispatched, pending as of this writing**: `vibe_trading_deep_research_prompts.md` (repo root) has three deep-research prompts covering exactly the two directions above plus a deliberately open scan for edges not yet hypothesized. When those reports return, read them through this log's own credibility-tiering discipline (`vibe_trading_bar_boundary_deep_dive.md` §1) before promoting any specific claim into a new backtest design — a future §44 should record what came back and what, if anything, gets built from it.

@@ -2,6 +2,7 @@
 
 **Generated:** 2026-06-30 13:53:26Z  
 **Updated:** 2026-07-01 — added agent-tasking / prompting best-practices section after second repository scan.  
+**Updated:** 2026-07-01 — corrected §8.3's execution-loop description after direct, hands-on testing during a research session (`vibe_trading_research_findings.md` §42-43): the original "open, add, reduce, reverse, or close positions" bullet did not match the actual code for any engine (verified by grepping every engine file) — default behavior is open/close only with entry-locked sizing; add/reduce is now a real, opt-in capability (`config["rebalance_threshold"]`) added during that session. Also added a concrete AST-safety-validator edge case (§7.3) found while building a permutation-test script, and the new config key to §7.2. The rest of the document held up against a full session of hands-on backtest/loader/engine/config usage via the MCP tools — see the note at the end of §21 for a fuller assessment.  
 **Purpose:** a technical reference for future strategy and research development: what Vibe-Trading can do, how it does it, which data it can collect through its built-in/default data-provider layer, what tests and validations it can run, how strategies are implemented, what outputs it creates, where the strengths are, and where the constraints are.
 
 ---
@@ -759,6 +760,7 @@ The schema allows additional config keys; engines and tools use extras such as:
 - `optimizer_params`;
 - `validation`;
 - market-specific fee/margin/slippage settings;
+- `rebalance_threshold` — opt-in mid-hold position resizing, see §8.3;
 - `options_config` for the options engine.
 
 ### 7.3 Strategy safety checks
@@ -767,7 +769,7 @@ The runner validates `signal_engine.py` before import:
 
 - no `from signal_engine import ...` self-import;
 - top-level executable statements are rejected;
-- top-level assignments must be literal-only;
+- top-level assignments must be literal-only — **note a real, non-obvious edge case, confirmed by direct testing**: the literal check (`_is_literal_node`) recognizes `ast.Constant`/`Tuple`/`List`/`Set`/`Dict` but not `ast.UnaryOp`, and Python parses a negative-number literal (e.g. `-0.43`) as `UnaryOp(USub, Constant(...))`, not a bare `Constant`. A top-level dict/list/tuple containing a negative number is therefore rejected even though it looks like plain data — encode sign separately (e.g. a non-negative code) and apply it inside `generate()`'s body instead, which has no such restriction;
 - functions/classes are allowed;
 - decorators are rejected in function/class definitions;
 - class-level executable statements are rejected;
@@ -882,15 +884,17 @@ Important limitation: the explicit non-auto sources `yahoo`, `stooq`, `sina`, an
 The base engine implements bar-by-bar target-weight execution:
 
 1. call `on_bar()` hooks for each symbol/date;
-2. rebalance each symbol to the target notional exposure;
+2. rebalance each symbol toward the target notional exposure;
 3. use bar `open` for execution, falling back to close when open is unavailable;
 4. check `can_execute()` for market constraints;
 5. apply market-specific slippage;
 6. round trade size according to market lot rules;
 7. apply commissions/fees/taxes;
-8. open, add, reduce, reverse, or close positions;
+8. open or close positions (default), or optionally add-to/reduce an existing same-direction position (see below);
 9. mark equity;
 10. force-close all remaining positions at the final date with reason `end_of_backtest`.
+
+**Default sizing is entry-locked, not continuously rebalanced — a real, previously-undocumented behavior confirmed by direct inspection of `_rebalance()`, not an assumption.** A position's size (quantity) is set once, on the day it opens, from whatever `target_notional` the signal engine's weight implies *at that moment*. While the target's sign (long/short/flat) stays the same on subsequent bars, the position is **not** resized to match each new bar's recomputed target weight — it is left exactly as-is until the sign changes (a full close) or the backtest ends. A signal engine that returns a smoothly-varying magnitude every bar (a vol scalar, a risk-parity weight, a regime dampener) is therefore only actually acting on the value it computed on entry day; every subsequent day's recomputation of that same magnitude is inert until the next direction flip. This is universal across every engine on this platform (no engine overrides `_rebalance()`). An opt-in escape hatch exists: setting `config["rebalance_threshold"]` (a float) enables add-to/reduce logic that resizes a same-direction position once its target weight drifts from its current implied weight by more than the threshold, blending cost basis on adds and realizing partial P&L on reduces. It defaults to unset/`None`, which preserves the entry-locked behavior above exactly — every existing strategy and test is unaffected unless this key is explicitly set. Whether enabling it helps or hurts a given strategy is not universal — for at least one validated strategy family it was tested and found sharply harmful (see `vibe_trading_research_findings.md` §43.3 and `CLAUDE.md`), because it lets a vol-target formula trim a position exactly as a favorable trend's own volatility rises.
 
 This design is appropriate for bar-level systematic strategies. It does not model queue priority, bid/ask order book depth, intrabar stop/limit triggers, partial fills from volume participation, exchange outages, or broker-specific reject states except where simple rules are encoded.
 
@@ -1775,3 +1779,13 @@ Vibe-Trading is a capable, research-oriented trading-strategy platform whose cen
 Its best use is to accelerate hypothesis generation, data inspection, strategy prototyping, factor screening, and comparative research. Its outputs are concrete and auditable: CSV artifacts, JSON metrics, validation files, and run cards. Its limitations are mostly the expected ones for a free-provider, bar-level research stack: data reliability, simplified execution, incomplete market microstructure, model-based options pricing, and overfitting risk.
 
 For future strategy/research development, treat Vibe-Trading as a **fast, extensible research laboratory**. Use it to move from idea → data check → signal implementation → backtest → validation → factor comparison → report. For any result that matters, independently verify data, costs, benchmark choice, universe construction, and execution assumptions before treating the result as investment evidence.
+
+### 21.1 Post-hoc accuracy check, after an extended hands-on research session (added 2026-07-01)
+
+The claims above and throughout this document were checked against direct, repeated hands-on use of the `mcp__vibe-trading__*` MCP tools across a multi-session backtest research arc (`vibe_trading_research_findings.md`, ~43 sections). Honest assessment:
+
+- **Held up exactly as documented**: the `run_dir` + `config.json` + `code/signal_engine.py` contract (§5, §7.1-7.2); `mcp__vibe-trading__backtest`'s interface (just a `run_dir`, returns metrics JSON plus artifact paths inline in a single synchronous call — no polling needed, unlike the swarm tool's async `get_run_result`); the 1-bar signal shift and final `sum(abs(weights)) <= 1.0` normalization (§7.4); engine auto-routing for `source: "auto"` (crypto and US-equity symbols both routed correctly every time); every metrics.csv field name (§9.1); the Monte Carlo/bootstrap/walk-forward validation outputs (§10); and the documented `source`-specific annualization behavior.
+- **Found genuinely inaccurate, now corrected**: §8.3's execution-loop description (the "add/reduce" claim did not match any engine's actual code — see the update note at the top of this file and the corrected §8.3 text) and a real edge case in §7.3's safety-validator description (negative-number literals).
+- **Not exercised this session, so not independently re-verified**: the Alpha Zoo/factor-analysis tooling (§11), Shadow Account (§12), and options engine (§16.9/§7.6) — this session's work was entirely backtest/loader/engine-focused. Treat those sections' accuracy as resting on the original repository scan only, not on fresh confirmation, until a future session actually exercises them.
+- **One practical, non-documentation lesson**: `get_market_data` is accurate but token-heavy even for short (few-month) date ranges — prefer letting the backtest tool fetch data internally (it fetches full frames regardless) rather than pre-checking availability via `get_market_data` unless you specifically need to inspect raw values before committing to a backtest.
+- For non-default provider configuration that the MCP tool itself has no parameter for (e.g. `CCXT_EXCHANGE=hyperliquid` to reach a specific exchange), invoking `agent/backtest/runner.py <run_dir>` directly via a scoped shell env var (documented in `CLAUDE.md`) worked exactly as described, repeatedly, with no surprises.
