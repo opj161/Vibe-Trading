@@ -1,0 +1,6 @@
+run_timestamp,strategy,engine_sha256,window_start,window_end,true_days,true_return_pct,true_sharpe,true_max_dd_pct
+2026-07-02T01:04:48,CP3,3fc4362ee4a212bb,2026-07-01,2026-07-02,1,nan,nan,nan
+2026-07-02T01:04:53,M1,dc8d9726858f7b70,2026-07-01,2026-07-02,1,nan,nan,nan
+2026-07-02T01:04:58,Z4,87236a504a7c3f24,2026-07-01,2026-07-02,0,nan,nan,nan
+2026-07-02T01:05:03,Z8,3034b3571e137ef5,2026-07-01,2026-07-02,0,nan,nan,nan
+2026-07-02T01:05:08,ZA4,37cb3973f3023773,2026-07-01,2026-07-02,0,nan,nan,nan
