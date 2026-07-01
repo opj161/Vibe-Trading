@@ -110,6 +110,37 @@ class TestCommission:
 
 
 # ---------------------------------------------------------------------------
+# generic "commission" config key: was previously silently ignored, since
+# only maker_rate/taker_rate were read. Now aliases to both when they're
+# not explicitly set (see CLAUDE.md's known-fixed-issues entry).
+# ---------------------------------------------------------------------------
+
+
+class TestGenericCommissionAlias:
+    def test_commission_seeds_both_maker_and_taker(self) -> None:
+        engine = CryptoEngine({"initial_cash": 100_000, "commission": 0.0006})
+        assert engine.maker_rate == pytest.approx(0.0006)
+        assert engine.taker_rate == pytest.approx(0.0006)
+
+    def test_explicit_maker_taker_override_generic_commission(self) -> None:
+        engine = CryptoEngine(
+            {
+                "initial_cash": 100_000,
+                "commission": 0.0006,
+                "maker_rate": 0.0001,
+                "taker_rate": 0.0003,
+            }
+        )
+        assert engine.maker_rate == pytest.approx(0.0001)
+        assert engine.taker_rate == pytest.approx(0.0003)
+
+    def test_no_commission_key_keeps_original_defaults(self) -> None:
+        engine = CryptoEngine({"initial_cash": 100_000})
+        assert engine.maker_rate == pytest.approx(0.0002)
+        assert engine.taker_rate == pytest.approx(0.0005)
+
+
+# ---------------------------------------------------------------------------
 # apply_slippage
 # ---------------------------------------------------------------------------
 

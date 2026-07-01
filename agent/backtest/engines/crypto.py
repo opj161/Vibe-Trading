@@ -24,8 +24,11 @@ class CryptoEngine(BaseEngine):
 
     Config keys:
       - leverage: default 1.0
-      - maker_rate: default 0.0002
-      - taker_rate: default 0.0005
+      - commission: generic fee rate applied to both maker_rate and
+        taker_rate when those are not set explicitly (default 0.0002/0.0005
+        split is used if neither commission nor maker_rate/taker_rate are set)
+      - maker_rate: default 0.0002 (or ``commission`` if set)
+      - taker_rate: default 0.0005 (or ``commission`` if set)
       - slippage: default 0.0005
       - margin_mode: "isolated" (default) or "cross"
       - funding_rate: fixed rate per settlement, default 0.0001
@@ -33,8 +36,13 @@ class CryptoEngine(BaseEngine):
 
     def __init__(self, config: dict):
         super().__init__(config)
-        self.maker_rate: float = config.get("maker_rate", 0.0002)
-        self.taker_rate: float = config.get("taker_rate", 0.0005)
+        generic_commission = config.get("commission")
+        self.maker_rate: float = config.get(
+            "maker_rate", generic_commission if generic_commission is not None else 0.0002
+        )
+        self.taker_rate: float = config.get(
+            "taker_rate", generic_commission if generic_commission is not None else 0.0005
+        )
         self.slippage_rate: float = config.get("slippage", 0.0005)
         self.funding_rate: float = config.get("funding_rate", 0.0001)
         self._funding_applied: set = set()   # (symbol, date, hour) — per-slot dedup
