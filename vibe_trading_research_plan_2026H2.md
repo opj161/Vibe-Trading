@@ -273,7 +273,7 @@ rejected** (cost-free-leverage trap, §64.3).
 | P1.4 spot-vs-perp isolation | **Done — closed** | Zero instrument effect (ZB3, §64.6); perps are the preferred live wrapper (cheaper fees) |
 | NEW: exogenous data bridge | **Done** | `research/data/`: stablecoin mcap, BTC ETF flows, DVOL, macro ETFs — refresh scripts trivial to re-run |
 | NEW: liquidity/macro/ETF-flow overlays on Z4 | **Done — closed negative** | ZB2 + attribution (§64.4-64.5); do not revisit slower-than-trend conditioning variables as Z4 overlays |
-| P2.1 China A momentum sleeve + event/flow conditioning | **In progress** | Real-engine pilot running (CNM1 vs equal-weight control, §65+); event/flow conditioning only after the plain sleeve validates |
+| P2.1 China A momentum sleeve + event/flow conditioning | **Pilot done — negative; found a platform bug** | Naive 40-name top-8 12-1 momentum LOST to an equal-weight-all-40 control (Sharpe 0.13 vs 0.38, DD -29.9% vs -21.6%, §66.2). Not a refutation of §59's IC finding — a cruder test. If resumed: needs the full factor-analysis-tool pipeline + point-in-time broader universe, not another top-N variant. Side effect: found + fixed a 4th loader-truncation bug (Tencent 500-bar cap, §66.1) |
 | P2.2 TUSHARE_TOKEN decision | Open (user budget call) | Unblocks China A value/quality |
 | P2.3 composite refresh | **Done** | CPA3 (full-deploy ×2 + crypto-leg regime damp + 30/70): ann 45.7%, Sharpe 1.402, Calmar 1.55 — best composite yet; frozen for forward validation (§65.2) |
 | P2.5 (new) US AI/semi rotation study | Open — hypothesis-generation only | From the report's P5; treat archive short-window runs as hypotheses, never evidence |
