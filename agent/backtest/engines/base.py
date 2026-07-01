@@ -273,6 +273,12 @@ class BaseEngine(ABC):
         self.equity_snapshots: List[EquitySnapshot] = []
         self._bar_idx: int = 0
         self._active_symbol: str = ""  # set by _rebalance/_close_position for subclass use
+        # Opt-in mid-hold resizing (see _maybe_resize docstring). None/absent
+        # preserves the original behavior: once opened, a position's size is
+        # frozen until the next direction-sign change, regardless of how a
+        # signal engine's own target weight for that symbol varies while the
+        # sign stays the same.
+        self.rebalance_threshold: Optional[float] = config.get("rebalance_threshold")
 
     # ── Market rule interface (subclass must implement) ──
 
@@ -591,6 +597,12 @@ class BaseEngine(ABC):
                     self._close_position(symbol, price, ts, "signal")
                 else:
                     return  # blocked (e.g. limit-down can't sell)
+            elif self.rebalance_threshold is not None:
+                # Same direction, still open: optionally resize toward the
+                # new target weight instead of leaving size frozen at
+                # whatever it was on entry day (opt-in, see _maybe_resize).
+                self._maybe_resize(symbol, target_dir, target_weight, current_pos, bar, equity)
+                return
 
         # Open new if target non-zero and no remaining position
         if target_dir != 0 and symbol not in self.positions:
@@ -636,6 +648,135 @@ class BaseEngine(ABC):
                 entry_bar_idx=self._bar_idx,
                 entry_commission=comm,
             )
+
+    def _maybe_resize(
+        self,
+        symbol: str,
+        target_dir: int,
+        target_weight: float,
+        current_pos: Position,
+        bar: pd.Series,
+        equity: float,
+    ) -> None:
+        """Add to or reduce an existing same-direction position toward a new
+        target weight, once the drift from its current implied weight
+        exceeds ``self.rebalance_threshold``.
+
+        Opt-in only (``config["rebalance_threshold"]``, default ``None``):
+        by construction this is never called unless a config explicitly sets
+        it, so every existing strategy/test keeps the original entry-locked
+        sizing behavior exactly. When enabled, a signal engine's
+        continuously-varying target weight (a vol scalar, a chop/regime
+        scalar, a risk-parity weight, etc.) can actually take effect
+        throughout a hold instead of only on the day a position opens.
+
+        Known limitation: partial resizes correctly adjust ``self.capital``
+        and ``self.positions`` (so equity/return/drawdown/Sharpe are
+        accurate), but are not appended to ``self.trades`` as separate
+        records — trade-level attribution (win rate, PnL-per-trade,
+        exit-reason stats) reflects only the position's final segment at
+        full close, not each intermediate resize. Fine for equity-curve-based
+        research metrics; would need extending ``TradeRecord`` for accurate
+        trade-level attribution of resized positions.
+        """
+        open_price = float(bar.get("open", bar.get("close", 0)))
+        if open_price <= 0:
+            return
+        current_notional = current_pos.size * open_price
+        current_weight = current_notional / equity if equity > 1e-9 else 0.0
+        target_abs_weight = abs(target_weight)
+        if abs(target_abs_weight - current_weight) < self.rebalance_threshold:
+            return  # inside the no-trade band -- leave the position as-is
+
+        if not self.can_execute(symbol, target_dir, bar):
+            return
+        slipped = self.apply_slippage(open_price, target_dir)
+        leverage = current_pos.leverage
+        target_notional = target_abs_weight * equity * leverage
+        raw_size = self._calc_raw_size(symbol, target_notional, slipped)
+        new_size = self.round_size(raw_size, slipped)
+        if new_size <= 0 or abs(new_size - current_pos.size) < 1e-12:
+            return
+
+        if new_size > current_pos.size:
+            self._add_to_position(symbol, current_pos, new_size, slipped)
+        else:
+            self._reduce_position(symbol, current_pos, new_size, slipped)
+
+    def _add_to_position(
+        self,
+        symbol: str,
+        current_pos: Position,
+        new_size: float,
+        slipped_price: float,
+    ) -> None:
+        """Increase size toward *new_size*, blending the cost basis."""
+        leverage = current_pos.leverage
+        added_size = new_size - current_pos.size
+        added_margin = self._calc_margin(symbol, added_size, slipped_price, leverage)
+        comm = self.calc_commission(added_size, slipped_price, current_pos.direction, is_open=True)
+
+        if added_margin + comm > self.capital:
+            available = self.capital - comm
+            if available <= 0:
+                return
+            added_size = self.round_size(
+                self._calc_raw_size(symbol, available * leverage, slipped_price), slipped_price,
+            )
+            if added_size <= 0:
+                return
+            added_margin = self._calc_margin(symbol, added_size, slipped_price, leverage)
+            comm = self.calc_commission(added_size, slipped_price, current_pos.direction, is_open=True)
+
+        self.capital -= (added_margin + comm)
+        total_size = current_pos.size + added_size
+        blended_entry = (
+            current_pos.size * current_pos.entry_price + added_size * slipped_price
+        ) / total_size
+        self.positions[symbol] = Position(
+            symbol=symbol,
+            direction=current_pos.direction,
+            entry_price=blended_entry,
+            entry_time=current_pos.entry_time,
+            size=total_size,
+            leverage=leverage,
+            entry_bar_idx=current_pos.entry_bar_idx,
+            entry_commission=current_pos.entry_commission + comm,
+        )
+
+    def _reduce_position(
+        self,
+        symbol: str,
+        current_pos: Position,
+        new_size: float,
+        slipped_price: float,
+    ) -> None:
+        """Decrease size toward *new_size*, realizing partial P&L on the
+        reduced portion. Cost basis (entry_price) of the remaining size is
+        unchanged, matching standard partial-close accounting."""
+        reduced_size = current_pos.size - new_size
+        if reduced_size <= 0:
+            return
+        partial_pnl = self._calc_pnl(
+            symbol, current_pos.direction, reduced_size, current_pos.entry_price, slipped_price,
+        )
+        released_margin = self._calc_margin(
+            symbol, reduced_size, current_pos.entry_price, current_pos.leverage,
+        )
+        exit_comm = self.calc_commission(
+            reduced_size, slipped_price, current_pos.direction, is_open=False,
+        )
+        self.capital += released_margin + partial_pnl - exit_comm
+        self.positions[symbol] = Position(
+            symbol=symbol,
+            direction=current_pos.direction,
+            entry_price=current_pos.entry_price,
+            entry_time=current_pos.entry_time,
+            size=new_size,
+            leverage=current_pos.leverage,
+            entry_bar_idx=current_pos.entry_bar_idx,
+            entry_commission=current_pos.entry_commission,
+        )
 
     def _close_position(
         self,

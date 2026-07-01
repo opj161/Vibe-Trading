@@ -11,6 +11,7 @@ import pytest
 
 from backtest.engines.base import BaseEngine, _align, _load_optimizer
 from backtest.engines.china_a import ChinaAEngine
+from backtest.engines.crypto import CryptoEngine
 from backtest.models import Position
 
 
@@ -230,3 +231,129 @@ class TestSafePrice:
         dates = pd.DatetimeIndex([pd.Timestamp("2025-01-02")])
         close_df = pd.DataFrame({"X": [np.nan]}, index=dates)
         assert BaseEngine._safe_price(close_df, dates[0], "X", 10.0) == 10.0
+
+
+# ---------------------------------------------------------------------------
+# rebalance_threshold: opt-in mid-hold position resizing
+# ---------------------------------------------------------------------------
+
+
+def _make_crypto_engine(**overrides) -> CryptoEngine:
+    config = {
+        "initial_cash": 100_000,
+        "leverage": 1.0,
+        "maker_rate": 0.0005,
+        "taker_rate": 0.001,
+        "slippage": 0.0,
+        "funding_rate": 0.0,
+    }
+    config.update(overrides)
+    return CryptoEngine(config)
+
+
+def _bar(open_: float, close: float | None = None) -> pd.Series:
+    return pd.Series({"open": open_, "close": close if close is not None else open_})
+
+
+class TestRebalanceThresholdDefault:
+    """rebalance_threshold absent/None must preserve the original
+    entry-locked-sizing behavior exactly -- no existing strategy/test
+    should be affected by this feature existing."""
+
+    def test_default_none(self) -> None:
+        assert _make_crypto_engine().rebalance_threshold is None
+
+    def test_same_direction_magnitude_change_is_noop_by_default(self) -> None:
+        engine = _make_crypto_engine()  # no rebalance_threshold
+        engine.positions["BTC-USDT"] = Position(
+            "BTC-USDT", 1, 100.0, pd.Timestamp("2025-01-02"), 400.0, leverage=1.0,
+        )
+        engine.capital = 59_960.0
+        # A large same-direction target-weight change (0.4 -> 0.7) should
+        # not touch the position at all without rebalance_threshold set.
+        engine._rebalance("BTC-USDT", 0.7, pd.DataFrame(
+            {"open": [120.0], "close": [120.0]}, index=[pd.Timestamp("2025-01-10")],
+        ), pd.Timestamp("2025-01-10"), 100_000.0)
+        pos = engine.positions["BTC-USDT"]
+        assert pos.size == pytest.approx(400.0)
+        assert pos.entry_price == pytest.approx(100.0)
+        assert engine.capital == pytest.approx(59_960.0)
+
+
+class TestRebalanceThresholdResize:
+    def test_below_threshold_is_noop(self) -> None:
+        engine = _make_crypto_engine(rebalance_threshold=0.10)
+        pos = Position("BTC-USDT", 1, 100.0, pd.Timestamp("2025-01-02"), 400.0, leverage=1.0)
+        engine.positions["BTC-USDT"] = pos
+        engine.capital = 59_960.0
+        # current_weight = 400*100/100_000 = 0.40; target 0.45 -> diff 0.05 < 0.10
+        engine._maybe_resize("BTC-USDT", 1, 0.45, pos, _bar(100.0), 100_000.0)
+        assert engine.positions["BTC-USDT"] is pos  # untouched
+        assert engine.capital == pytest.approx(59_960.0)
+
+    def test_add_blends_entry_price_and_deducts_capital(self) -> None:
+        engine = _make_crypto_engine(rebalance_threshold=0.10)
+        pos = Position("BTC-USDT", 1, 100.0, pd.Timestamp("2025-01-02"), 400.0, leverage=1.0)
+        engine.positions["BTC-USDT"] = pos
+        engine.capital = 59_960.0  # 100_000 - 40_000 margin - 40 entry commission
+
+        # Price has risen to 120; current_weight = 400*120/100_000 = 0.48;
+        # target 0.70 -> diff 0.22 >= 0.10 threshold -> resize (add).
+        engine._maybe_resize("BTC-USDT", 1, 0.70, pos, _bar(120.0), 100_000.0)
+
+        new_pos = engine.positions["BTC-USDT"]
+        # target_notional = 0.70*100_000 = 70_000; added_notional = 70_000 - 48_000 = 22_000
+        # added_size = 22_000/120 = 183.333...; total_size = 400 + 183.333... = 583.333...
+        assert new_pos.size == pytest.approx(583.333333, rel=1e-6)
+        # blended_entry = (400*100 + 183.333...*120) / 583.333... = 62_000/583.333... = 106.285714
+        assert new_pos.entry_price == pytest.approx(106.285714, rel=1e-6)
+        assert new_pos.direction == 1
+        assert new_pos.entry_time == pos.entry_time  # holding period tracking preserved
+
+        added_margin = 22_000.0
+        added_comm = 22_000.0 * 0.001  # taker rate, on the added notional only
+        assert engine.capital == pytest.approx(59_960.0 - added_margin - added_comm)
+
+    def test_reduce_realizes_partial_pnl_and_keeps_entry_price(self) -> None:
+        engine = _make_crypto_engine(rebalance_threshold=0.10)
+        pos = Position("BTC-USDT", 1, 100.0, pd.Timestamp("2025-01-02"), 500.0, leverage=1.0)
+        engine.positions["BTC-USDT"] = pos
+        engine.capital = 49_950.0  # 100_000 - 50_000 margin - 50 entry commission
+
+        # Price has risen to 110; current_weight = 500*110/100_000 = 0.55;
+        # target 0.20 -> diff 0.35 >= 0.10 threshold -> resize (reduce).
+        engine._maybe_resize("BTC-USDT", 1, 0.20, pos, _bar(110.0), 100_000.0)
+
+        new_pos = engine.positions["BTC-USDT"]
+        # target_notional = 0.20*100_000 = 20_000; reduced_notional = 55_000-20_000 = 35_000
+        # reduced_size = 35_000/110 = 318.1818...; new_size = 500 - 318.1818... = 181.8182
+        assert new_pos.size == pytest.approx(181.818182, rel=1e-6)
+        assert new_pos.entry_price == pytest.approx(100.0)  # unchanged for remaining size
+
+        # released_margin + partial_pnl = reduced_size * exit_price = 35_000 exactly
+        # (released at entry_price=100, pnl on the (110-100) move -- their sum
+        # telescopes to reduced_size * slipped_price by construction)
+        exit_comm = 35_000.0 * 0.0005  # maker rate, on the reduced notional
+        assert engine.capital == pytest.approx(49_950.0 + 35_000.0 - exit_comm)
+
+    def test_direction_flip_still_closes_not_resizes(self) -> None:
+        """rebalance_threshold must not interfere with the existing
+        close-on-sign-change path."""
+        engine = _make_crypto_engine(rebalance_threshold=0.10)
+        engine.positions["BTC-USDT"] = Position(
+            "BTC-USDT", 1, 100.0, pd.Timestamp("2025-01-02"), 400.0, leverage=1.0,
+        )
+        engine.capital = 59_960.0
+        df = pd.DataFrame({"open": [120.0], "close": [120.0]}, index=[pd.Timestamp("2025-01-10")])
+        engine._rebalance("BTC-USDT", -0.5, df, pd.Timestamp("2025-01-10"), 100_000.0)
+        # Old long closed (recorded as a trade)...
+        assert len(engine.trades) == 1
+        assert engine.trades[0].exit_reason == "signal"
+        assert engine.trades[0].direction == 1
+        # ...and a brand-new short opened at today's price -- not a "resize"
+        # of the old long's economics (entry_price is today's open, not any
+        # blend with the closed long's cost basis).
+        new_pos = engine.positions["BTC-USDT"]
+        assert new_pos.direction == -1
+        assert new_pos.entry_price == pytest.approx(120.0)
+        assert new_pos.entry_time == pd.Timestamp("2025-01-10")
