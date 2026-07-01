@@ -3,6 +3,16 @@
 Uses OKX V5 public REST API (no auth).
 Supports 1m/5m/15m/30m/1H/4H/1D.
 Up to 300 bars per request; paginates with ``after`` for longer history.
+
+``/market/candles`` only serves OKX's recent window (in practice, roughly
+the last several months to ~1-2 years depending on bar size — not
+officially documented, observed empirically). For older history, OKX
+provides a separate ``/market/history-candles`` endpoint with the same
+request/response shape and cursor semantics; ``_fetch_candles`` falls
+through to it automatically once ``/market/candles`` runs dry but the
+caller still wants data further back. This was previously unused, so daily
+history for e.g. BTC-USDT/ETH-USDT silently started around 2022-07 instead
+of OKX's actual listing-date depth (~2017-12) — see CLAUDE.md.
 """
 
 import time
@@ -124,45 +134,69 @@ class DataLoader:
         after = str(end_ts)
         deadline = time.monotonic() + _OKX_FETCH_BUDGET_S
         label = f"OKX fetch for {inst_id}"
+        oldest_ts = end_ts
 
-        for _ in range(max_pages):
-            check_budget(deadline, label, budget_s=_OKX_FETCH_BUDGET_S)
-            params = {
-                "instId": inst_id,
-                "bar": bar,
-                "limit": str(_MAX_PER_PAGE),
-                "after": after,
-            }
+        for endpoint in ("market/candles", "market/history-candles"):
+            if oldest_ts <= start_ts:
+                break  # already have everything the caller asked for
+            for _ in range(max_pages):
+                check_budget(deadline, label, budget_s=_OKX_FETCH_BUDGET_S)
+                params = {
+                    "instId": inst_id,
+                    "bar": bar,
+                    "limit": str(_MAX_PER_PAGE),
+                    "after": after,
+                }
 
-            def _do_request() -> dict:
-                resp = requests.get(
-                    f"{BASE_URL}/market/candles",
-                    params=params,
-                    timeout=_OKX_TIMEOUT,
+                def _do_request(endpoint=endpoint) -> dict:
+                    resp = requests.get(
+                        f"{BASE_URL}/{endpoint}",
+                        params=params,
+                        timeout=_OKX_TIMEOUT,
+                    )
+                    return resp.json()
+
+                data = retry_with_budget(
+                    _do_request,
+                    transient=requests.RequestException,
+                    deadline=deadline,
+                    label=label,
                 )
-                return resp.json()
+                if data.get("code") != "0" or not data.get("data"):
+                    break
 
-            data = retry_with_budget(
-                _do_request,
-                transient=requests.RequestException,
-                deadline=deadline,
-                label=label,
-            )
-            if data.get("code") != "0" or not data.get("data"):
-                break
+                rows = data["data"]
+                rows = [r for r in rows if r[8] == "1"]
+                all_rows.extend(rows)
 
-            rows = data["data"]
-            rows = [r for r in rows if r[8] == "1"]
-            all_rows.extend(rows)
-
-            oldest_ts = int(rows[-1][0]) if rows else start_ts
-            if oldest_ts <= start_ts or len(data["data"]) < _MAX_PER_PAGE:
-                break
-            after = str(oldest_ts)
+                oldest_ts = int(rows[-1][0]) if rows else oldest_ts
+                if oldest_ts <= start_ts or len(data["data"]) < _MAX_PER_PAGE:
+                    break
+                after = str(oldest_ts)
+            # Fall through to history-candles with the same cursor if
+            # market/candles ran dry (returned < a full page) before
+            # reaching start_ts — that's the "recent window exhausted,
+            # older data exists elsewhere" signal, not "no more data at
+            # all" (which would instead have oldest_ts <= start_ts).
 
         if not all_rows:
             print(f"[WARN] OKX empty response: {inst_id}")
             return None
+
+        # market/candles and market/history-candles overlap near the
+        # boundary where the fallback kicks in (history-candles doesn't
+        # start exactly where market/candles' coverage ends) — dedupe by
+        # timestamp, keeping the market/candles copy (processed first,
+        # earlier in all_rows) since it's the primary/more-current source.
+        seen_ts: set = set()
+        deduped_rows = []
+        for row in all_rows:
+            ts = row[0]
+            if ts in seen_ts:
+                continue
+            seen_ts.add(ts)
+            deduped_rows.append(row)
+        all_rows = deduped_rows
 
         columns = ["ts", "open", "high", "low", "close", "vol", "volCcy", "volCcyQuote", "confirm"]
         df = pd.DataFrame(all_rows, columns=columns)

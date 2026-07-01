@@ -81,11 +81,61 @@ def test_non_network_error_not_retried(monkeypatch):
 
 
 def test_happy_path_single_call(monkeypatch):
+    # A short (< _MAX_PER_PAGE) page from market/candles signals "recent
+    # endpoint exhausted before reaching start_ts", so the loader correctly
+    # falls through to market/history-candles once for the remainder (see
+    # CLAUDE.md's history-candles fix) — the mock can't distinguish
+    # endpoints, so it serves the same short page again there too, which
+    # itself short-circuits after one more call. 2 calls total, not 1.
     seq = _Seq([_ok_page()])
     monkeypatch.setattr(okx.requests, "get", seq)
     df = DataLoader()._fetch_candles("BTC-USDT", S, E, "1D", 20)
-    assert seq.calls == 1
+    assert seq.calls == 2
     assert list(df.columns) == ["open", "high", "low", "close", "volume"]
+
+
+def test_full_page_within_range_skips_history_candles_fallback(monkeypatch):
+    """When market/candles alone already reaches start_ts, no fallback call
+    to history-candles should happen — only fall through when the recent
+    endpoint runs dry (partial page) before covering the requested range."""
+    ts = S  # exactly at start_ts: satisfies oldest_ts <= start_ts (stop
+    # condition) while still passing the final index >= start_dt filter
+    full_page = _Resp(
+        {"code": "0", "data": [[ts, "1", "2", "0.5", "1.5", "10", "0", "0", "1"]]}
+    )
+    seq = _Seq([full_page])
+    monkeypatch.setattr(okx.requests, "get", seq)
+    df = DataLoader()._fetch_candles("BTC-USDT", S, E, "1D", 20)
+    # oldest_ts (the single row's ts) <= start_ts S, so the loop should stop
+    # after this one call without probing history-candles.
+    assert seq.calls == 1
+    assert df is not None
+
+
+def test_history_candles_overlap_is_deduplicated(monkeypatch):
+    """market/candles and market/history-candles overlap near the fallback
+    boundary in production (history-candles doesn't start exactly where
+    market/candles' coverage ends) — the loader must dedupe by timestamp,
+    not raise a duplicate-index error downstream in the engine's reindex.
+    See CLAUDE.md's history-candles fix."""
+    overlap_ts = int(pd.Timestamp("2026-05-02").timestamp() * 1000)
+    market_page = _Resp(
+        {"code": "0", "data": [[overlap_ts, "1", "2", "0.5", "1.5", "10", "0", "0", "1"]]}
+    )
+    history_page = _Resp(
+        {
+            "code": "0",
+            "data": [
+                [overlap_ts, "1", "2", "0.5", "1.5", "10", "0", "0", "1"],  # duplicate
+                [S, "0.9", "1.9", "0.4", "1.4", "9", "0", "0", "1"],
+            ],
+        }
+    )
+    seq = _Seq([market_page, history_page])
+    monkeypatch.setattr(okx.requests, "get", seq)
+    df = DataLoader()._fetch_candles("BTC-USDT", S, E, "1D", 20)
+    assert df.index.is_unique
+    assert len(df) == 2  # overlap_ts row deduped, S row kept
 
 
 def test_wallclock_budget_enforced(monkeypatch):
