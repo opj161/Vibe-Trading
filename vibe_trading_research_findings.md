@@ -1430,3 +1430,666 @@ Return scales up ~62% relative, drawdown worsens ~22% relative, and **Sharpe is 
 **No change to the recommendation** (Z4 for drawdown-focus, Z4+Z8 for return/Sharpe-focus) — every test this round either confirmed existing conclusions more rigorously (§43.3's resize test, §43.6's leverage test) or closed off a specific, well-motivated new avenue with a clean answer (§43.4's Z8 recalibration, §43.5's cross-asset generalization). The single most valuable finding is §43.3: it directly answers the question raised at the end of the previous conversation turn, and the answer is the opposite of what was hypothesized — entry-locked sizing helps this strategy, it doesn't limit it. **For anyone extending this research further**: the crypto-specific recipe should not be assumed to transfer to other asset classes without its own re-validation (§43.5); genuine leverage is available and well-behaved but doesn't create risk-adjusted improvement on its own (§43.6); the two genuinely unexplored, potentially high-value surfaces on this platform remain the Alpha Zoo factor system and a properly-recalibrated (slower-signal) macro/equity trend design — both real, both bigger undertakings than anything attempted this round.
 
 **External research dispatched, pending as of this writing**: `vibe_trading_deep_research_prompts.md` (repo root) has three deep-research prompts covering exactly the two directions above plus a deliberately open scan for edges not yet hypothesized. When those reports return, read them through this log's own credibility-tiering discipline (`vibe_trading_bar_boundary_deep_dive.md` §1) before promoting any specific claim into a new backtest design — a future §44 should record what came back and what, if anything, gets built from it.
+
+---
+
+## 44. Round 30 (user-directed, post deep-research reports): macro trend-following signal recalibration — a decisive, positive result, plus a real platform bug found and fixed
+
+The six deep-research reports commissioned in §43 came back (`research/*.md`) and were synthesized against this platform's actual verified capabilities into `vibe_trading_next_directions.md` (repo root) — a ranked next-steps document. Rank 1 was macro trend-following signal recalibration: both `Macro-Trend-Calibration-Strategy-1.md`/`-2.md` independently diagnosed that §43.5's SPY+GLD failure (-13.3% over 2005-2025 vs. SPY buy-and-hold's +413.6%) was caused by using the crypto-tuned EMA(10,30) signal — roughly 6x too fast for macro assets — not by the vol-targeting/ERC allocation machinery. This round tested that diagnosis directly.
+
+### 44.1 Two Tier-A-anchored signal designs, tested head-to-head rather than trusting either report on faith
+
+The two reports subtly disagree on ensemble structure: `Macro-Trend-Calibration-Strategy-2.md` recommends keeping a medium-term leg (AQR-style equal blend of 1/3/12-month TSMOM + a 20/120-day SMA crossover, all Tier-A-disclosed institutional benchmarks); `Macro-Trend-Calibration-Strategy-1.md` cites a late-2025/2026 Bayesian-optimization paper arguing the medium-term (~125-day) leg is mathematically redundant once fast (20-60d) and slow (250-500d) legs are both present, and that a pure "barbell" strictly dominates. Rather than picking a side, both were built and run on the identical SPY+GLD, 2005-01-01→2025-06-30 window `agent/backtest/runner.py` was already run on in §43.5:
+
+| Variant | Return | Sharpe | Max DD |
+|---|---:|---:|---:|
+| Original control (crypto EMA(10,30), §43.5) | -13.3% | -0.087 | — |
+| M1 — AQR-style 1/3/12mo TSMOM + 20/120 SMA blend | 112.3%* | 0.361* | -36.8%* |
+| M2 — Barbell (EMA20/60 fast + price-vs-SMA250 slow, no medium leg) | 61.8% | 0.380 | -18.3% |
+
+*M1's figures were superseded once the §44.2 bug fix below was applied — see the corrected table in §44.3.
+
+Both immediately and decisively confirmed the reports' diagnosis: recalibrating signal speed alone (same vol-targeting/ERC architecture as Z4, ported directly) turned an outright 20-year loss into legitimate, institutional-prior-matching positive risk-adjusted returns (both reports' own stated credible range: net Sharpe 0.3-0.6). A DSR check across this 2-point search (methodology per §19/§42.4) gave 95.31% even before the bug fix below — unsurprising given how small a 2-trial search is to correct for, but confirms this isn't a lucky draw from an implicit larger search.
+
+### 44.2 A genuine, previously-undiscovered platform bug, found while extending to a 4-asset universe
+
+Per the plan, the winning barbell design (M2) was extended from SPY+GLD to SPY+GLD+TLT+UUP (adding bonds and FX, per both reports' full asset-class recommendation). The result was structurally anomalous: average holding period collapsed from 43.9 days (2-asset) to 5.7 days, trade count exploded from 245 to 3,658 — and, critically, **SPY's own position-weight sign flipped 905 times in the 4-asset run vs. 119 times in the byte-identical 2-asset run, despite SPY's own price data and raw direction signal being provably identical (`fast_direction.values` compared element-for-element) between the two runs.**
+
+Root-caused by direct inspection: the hand-rolled `_erc_weights` function (copied verbatim from the validated `v_Z4_chopfreq_train/code/signal_engine.py` pattern — an undamped multiplicative Newton-style iteration, `w = w * (target / (rc + eps))`) diverges into large-magnitude **negative** weights once a genuinely negatively-correlated asset enters the covariance matrix. Reproduced directly with a synthetic equities/gold/bonds/FX-style covariance structure (bonds built with `-0.5` equity beta): weights came back as `[-0.26, -0.12, 0.40, 0.97]`. Since a signal engine applies `result = sign(direction) * combined_weight`, a negative ERC weight silently **flips the executed position's direction relative to the intended signal** — exactly the mechanism behind SPY's spurious extra sign flips (its own weight's *sign* was being corrupted by the ERC step, not its direction signal).
+
+**This is a real bug in the shipped platform capability, not just my hand-rolled copy**: `agent/backtest/optimizers/risk_parity.py::RiskParityOptimizer._calc_weights` has the identical iteration, confirmed to reproduce the exact same failure on the same synthetic matrix. It was fully dormant until now because every prior use of this optimizer on this platform — including all of Z4/Z8/Z9/X1's hand-rolled copies — only ever ran 2 assets with a strong, stable ~0.7-0.8 *positive* correlation (BTC/SOL), a regime where this particular undamped iteration happens to stay well-behaved. The existing `tests/test_risk_parity.py` suite never caught it because every test's covariance matrix came from i.i.d./weakly-correlated synthetic returns, never a genuinely negatively-correlated structure.
+
+**Fixed** by replacing the iteration with the standard convex log-barrier reformulation (Maillard, Roncalli & Teiletche 2010: `minimize 0.5*w'Σw - (1/n)Σlog(w_i)`, solved via `scipy.optimize.minimize`/L-BFGS-B with a positivity bound) — convex, with a unique positive minimizer for any positive-definite covariance matrix, so no update step can ever produce a negative or sign-flipping weight. Verified: genuinely equal risk contributions on the previously-failing matrix (rc ≈ [0.00056, 0.00056, 0.00056, 0.00056]), and **all 4616 existing tests still pass** (the fix only changes behavior in the region the old iteration was already numerically unstable in). Added a regression test,
+`tests/test_risk_parity.py::test_negatively_correlated_multi_asset_stays_nonnegative`. Per this repo's standing rule (`CLAUDE.md`), the real platform file was fixed directly; Z4/Z8's own frozen, already-validated hand-rolled copies were deliberately left untouched (the bug is provably dormant for their specific 2-asset positively-correlated case, and they're locked research artifacts, not active code). See `CLAUDE.md`'s "Known-fixed issues" for the condensed version.
+
+### 44.3 Corrected results: the fix improved even the already-working 2-asset case
+
+Re-running M1/M2 on SPY+GLD with the corrected `_erc_weights` (full window extended through the platform's actual present, 2005-01-01→2026-06-29, to also get a genuine OOS read):
+
+| Variant | Full-window return | Full-window Sharpe | Full-window Max DD | OOS (2025-07→2026-06) Sharpe | OOS return |
+|---|---:|---:|---:|---:|---:|
+| M1 — AQR blend | 217.6% | **0.535** | -22.3% | 1.132 | 7.1% |
+| M2 — Barbell | 85.2% | 0.434 | **-18.3%** | 1.098 | 14.5% |
+
+**M1's Sharpe improved substantially with the fix alone (0.361→0.535)** — SPY/GLD's correlation is weaker and more time-varying than BTC/SOL's (occasionally negative during flight-to-gold episodes), so the old iteration wasn't perfectly stable even in the 2-asset case, just not unstable enough to flip signs outright. M2 was essentially unchanged by the fix (0.380→0.434, mostly the extended window, not the fix itself) since its barbell construction happened to be more robust to the 2-asset SPY/GLD correlation structure specifically.
+
+A DSR check on the corrected 2-trial comparison gives **98.90%** (best trial: M1). **Recommendation, mirroring the Z4/Z8 pattern**: M1 (AQR blend) for return/Sharpe-focus, M2 (barbell) for drawdown-focus — both dramatically better than the original crypto-tuned control, both within/above the reports' own stated credible institutional prior (net Sharpe 0.3-0.6), and — a genuinely pleasing external sanity check — **both OOS windows' strong performance (Sharpe >1.0) lines up directionally with real SG Trend/SG CTA index performance over the identical window** (`Macro-Trend-Calibration-Strategy-1.md`'s own citation: SG Trend +9.09% YTD, SG CTA +9.58% YTD as of late June 2026).
+
+### 44.4 The 4-asset extension (even asset-class-tilted) underperforms the clean 2-asset design — a genuine, informative negative result
+
+With the ERC bug fixed, the 4-asset SPY+GLD+TLT+UUP barbell's turnover anomaly resolved (trade count 3,658→575, avg holding back to a sane 36.5 days) — but the actual risk-adjusted result was much weaker than the 2-asset version: Sharpe 0.049, return 1.9% over 21 years (vs. M2's 2-asset Sharpe 0.434). Per-asset P&L attribution (`trades.csv`) showed why: TLT was a clear net drag (-$53.1k P&L, 432 trades — nearly double every other asset's ~230-250) while GLD contributed +$59.0k — exactly the "fixed-income whipsaw" mechanism both reports describe (`Macro-Trend-Calibration-Strategy-1.md`'s own account of 2023's SVB-crisis fixed-income reversal; `Macro-Trend-Calibration-Strategy-2.md`'s asset-class tilt table explicitly recommending less fast-sleeve weight for bonds).
+
+Tested one well-motivated variant sourced directly from that table (not an open-ended parameter search): per-asset fast/slow weight tilts (SPY/UUP 20% fast / 80% slow, GLD/TLT 10% fast / 90% slow, vs. the uniform 35/65 default). Result: improved but still far short of the 2-asset design (Sharpe 0.167, return 7.8%, max DD -5.1% — very defensive/low-conviction). **Conclusion: for this specific barbell recipe, extending to 4 assets is a case of diminishing-to-negative returns, even with the reports' own recommended tilting** — recommend the clean 2-asset SPY+GLD design (M1/M2) as the actual candidate, not the 4-asset extension. Per this log's own standing discipline (§38, §40.3), this is exactly the point to stop rather than keep tuning per-asset weights further in search of a rescue.
+
+### 44.5 Diversification check against crypto Z4 — genuine near-zero correlation, but the tail-event sample is too thin to trust yet
+
+Computed correlation between M1/M2's daily returns and the existing validated crypto Z4 OOS run (`v_Z4_chopfreq_OOS_TEST`), on the date-normalized overlap window (only 291 days available, since Z4's OOS run starts 2025-05-01):
+
+- **Full-sample correlation: -0.025 (M1 vs Z4), -0.035 (M2 vs Z4)** — genuinely close to zero, consistent with (and even lower than) both reports' cited ~7-9% average rolling correlation between crypto trend-following and traditional macro CTA benchmarks. This is a real, credible diversification signal.
+- On SPY's worst 10% days in this window (n=29), M1/M2 averaged slightly negative (-0.31%, -0.51%) while Z4 averaged slightly positive (+0.16%) — a hint of crisis-alpha-style offset, but n=29 is thin.
+- On BTC's worst 10% days (n=29), M1/M2 averaged slightly positive (+0.08%, +0.04%) while Z4 was (naturally) negative (-0.22%) — same caveat.
+- Only 1 day in the whole window had both SPY and BTC simultaneously in their worst deciles (2025-05-21) — all three sleeves were positive that day, but n=1 proves nothing on its own.
+
+**Honest read**: the full-sample near-zero correlation is the one number here worth trusting (large-enough sample, consistent with external Tier-A evidence); the tail-event/crisis-alpha claims are directionally encouraging but need a much longer Z4-vs-macro overlap window before being treated as a real finding — revisit once more calendar time has passed and Z4's own OOS window naturally extends.
+
+### 44.6 Net effect and recommendation
+
+**A genuinely new, validated, positive-Sharpe strategy sleeve now exists on this platform outside crypto** — M1 (`v_M1_macro_aqrblend_full`) for return/Sharpe-focus, M2 (`v_M2_macro_barbell_full`) for drawdown-focus, both on SPY+GLD, both far exceeding the original crypto-tuned control and matching institutional credible priors in both the full 20-year window and the true forward OOS slice. This also produced a real, cross-cutting platform bug fix (§44.2) that benefits any future strategy reaching for the real `risk_parity` optimizer with a genuinely diversifying (not just positively-correlated) multi-asset universe — exactly the kind of latent defect the "fix codebase issues directly when encountered" standing rule exists to catch. **Genuinely open for a future round**: re-testing the 4-asset extension with a properly-diversified allocation approach beyond simple fast/slow tilting (e.g., testing whether the platform's own now-fixed `risk_parity` optimizer, used directly via the `optimizer: "risk_parity"` config hook rather than a hand-rolled replica, changes the 4-asset picture — an implementation-comparison question, not yet asked); extending the Z4-vs-macro correlation check once more calendar time passes and the overlap window is long enough to trust the tail-event numbers.
+
+---
+
+## 45. Round 31 (same continuation): first real use of the Alpha Zoo — China A-share factor research
+
+Rank 2 of `vibe_trading_next_directions.md`: the platform's 456-factor Alpha Zoo (`agent/src/factors/zoo/`) had never been used in any research on this platform before this round. Both factor-research reports (`Systematic-Trading-Factor-Research-1.md`/`-2.md`) independently rank China A as the strongest-evidence, best-infrastructure-fit universe for this specific library, recommending a low-volatility + dividend/value + profitability-quality composite, conditioned on retail-crowding regime.
+
+### 45.1 A real data-access gap, and a workaround found and verified
+
+`TUSHARE_TOKEN` is not configured in this environment (checked directly: `os.environ.get("TUSHARE_TOKEN")` is empty, and `.mcp.json` sets no such env var) — this blocks the `fundamental_fields` enrichment path documented in the technical overview, meaning genuine quality/profitability factors (ROE, earnings, book value from financial statements) are **not reachable** here without acquiring a token, a real scope limitation worth recording plainly rather than working around silently.
+
+**A partial, verified workaround was found**: `akshare`'s free, no-key `stock_zh_valuation_baidu(symbol, indicator="市净率", period="近三年")` endpoint returns real daily historical P/B ratio per A-share code (~3 years of history per call, Baidu-sourced) — confirmed working live (e.g. `000001`'s P/B tracked 0.42-0.43 through late June 2026). This unlocks a genuine value/book-to-market factor without a Tushare token, though the ~3-year lookback cap constrained this round's test window; quality/profitability (ROE-style) factors remain blocked pending a token or an equivalent free endpoint, not yet found.
+
+### 45.2 Test design and a genuine methodological trap found and fixed along the way
+
+Universe: 45 codes randomly sampled (seed 42) from the **current** (2026-07-01) CSI 300 constituent list (`akshare.index_stock_cons_csindex`) — an explicit, disclosed survivorship-bias limitation (today's constituents applied backward), accepted because no point-in-time constituent membership source was readily available in this environment; exactly the trap both reports flag as the most common factor-research mistake, so flagging it here rather than glossing over it. Window: 2022-07-01→2026-06-29. Forward return: 20 trading days (~1 month, matching both reports' recommended holding period).
+
+**Data hygiene**: 3 of 45 codes (`300033`, `300803`, `302132`) showed single 20-day forward returns >100% (302132 spiked +457% in Jan 2023) — consistent with recent-listing/small-cap abnormal volatility, exactly the "exclude recent IPOs" screen `Systematic-Trading-Factor-Research-2.md` explicitly recommends. Excluded, leaving 42 codes.
+
+**A real bug in this round's own methodology, caught and fixed before trusting results**: an initial quantile-group-equity backtest (`factor_analysis_core.compute_group_equity`) produced nonsensical NAVs (864,950x on Group_1 over 4 years) — root-caused to passing a **daily-sampled series of 20-day-forward returns** into a function whose `cumprod()` assumes each row is a genuinely realized, non-overlapping holding-period return. Feeding it heavily-overlapping rolling forward returns makes it compound a "new" 20-day return on every single day, wildly overstating growth. This is a usage-pattern trap in how `compute_group_equity` is fed, not a platform bug — worth remembering for any future user of `factor_analysis_core` with rolling forward returns: **subsample to a genuine non-overlapping rebalance walk (e.g. every Nth date matching the forward-return horizon) before computing group equity**; the daily IC series itself (`compute_ic_series`) has no such issue and is standard, correct methodology as-is.
+
+### 45.3 IC/IR results: momentum surprised, value confirmed, reversal was noise, and the naive composite underperformed its own components
+
+| Factor | IC mean | IC std | IR | Positive-IC ratio | n (daily obs) |
+|---|---:|---:|---:|---:|---:|
+| Momentum (`academic_carhart_mom`, real Alpha Zoo factor) | **0.0673** | 0.273 | **0.246** | 60.4% | 695 |
+| Value (-PB, constructed from the akshare workaround) | 0.0428 | 0.290 | 0.147 | 58.7% | 704 |
+| Low-volatility (constructed: `-ts_std(returns, 20)`, ranked) | 0.0205 | 0.296 | 0.069 | 52.2% | 927 |
+| Short-term reversal (`academic_strev`, real Alpha Zoo factor) | -0.0071 | 0.259 | -0.027 | 45.7% | 926 |
+| Naive equal-weight composite (low-vol + value, z-scored) | 0.0244 | 0.326 | 0.075 | 54.1% | 704 |
+
+Two results worth flagging as genuinely surprising relative to the reports' own framing, reported honestly rather than smoothed to match expectations: (1) **momentum showed the strongest IC/IR of any factor tested here**, contradicting both reports' claim that classic momentum is "weak/fragile" in China A (MSCI's own cited research) — though this is one ~4-year window on a 42-stock sample, a real but limited test, not a refutation of that broader literature; (2) **the naive equal-weight low-vol+value composite underperformed value alone** (IR 0.075 vs 0.147) — combining diluted rather than strengthened the signal in this specific sample, the opposite of the reports' "combinations beat single factors" framing for this particular pairing. Short-term reversal showed essentially zero-to-slightly-negative IC, consistent with both reports' warning that raw reversal is fragile and cost-sensitive. All figures should be read with a real statistical caveat: with a 20-day forward-return horizon, the effective independent sample size is roughly `n/20` (~35-46 independent periods, not 695-927) due to serial overlap — directionally informative, not yet a fully powered result.
+
+### 45.4 The decisive result: value's factor IC genuinely flips sign across retail-crowding regimes
+
+`Systematic-Trading-Factor-Research-2.md`'s own flagged "most important thing you didn't ask about" — Acadian's finding that China A retail-surge episodes can invert normal factor relationships — was tested directly rather than just cited. Built a simple, no-new-data-required regime proxy (cross-sectional mean daily volume, z-scored against its own 120-day rolling mean/std; z>1.0 flagged as a "crowded/retail-surge-like" regime) and re-computed the value factor's IC conditional on that regime:
+
+| Regime | Value factor IC (mean) | n (daily obs) |
+|---|---:|---:|
+| All days | 0.0428 | 704 |
+| Calm (turnover z ≤ 1.0), 77.5% of days | **+0.0681** | 551 |
+| Crowded (turnover z > 1.0), 22.5% of days | **-0.0485** | 153 |
+
+**This is a genuine, sizeable, directionally clean confirmation of the regime-conditional framing, found empirically rather than just asserted from the report**: value's edge is not just weaker during retail-crowding episodes, it **inverts sign entirely** in this sample. Same caveat as §45.3 applies to sample size (153/20≈8 and 551/20≈28 effective independent periods) — the magnitude and exact 22.5%-of-days crowding frequency shouldn't be over-claimed as precisely calibrated (a simple volume-z-score proxy on 42 stocks is not Acadian's own market-wide retail-flow indicator), but the *direction and starkness* of the effect is a real, useful finding: **any future factor test on this platform's China A data should condition on a crowding/regime proxy before reporting an unconditional average IC**, exactly the methodological upgrade both reports argued for.
+
+### 45.5 Net effect and what's still open
+
+A genuinely new, first-ever real use of this platform's 456-factor Alpha Zoo produced: (1) a verified free-data workaround for value-factor testing without a Tushare token; (2) a real usage-pattern gotcha in `compute_group_equity` worth remembering; (3) an honest, promising-but-not-fully-powered first read on momentum/value/low-vol/reversal in China A, with one result (momentum's strength) cutting against the external reports' own framing; (4) a decisive, sample-size-caveated but directionally clear confirmation that factor behavior is regime-conditional on retail crowding, not a fixed constant. **Genuinely open**: a longer window and larger universe (blocked mainly by per-symbol API call volume/time, not a capability gap) would substantially firm up the effective-sample-size caveat on every number above; a real point-in-time CSI 300/500 constituent history (rather than today's list applied backward) would close the survivorship-bias gap both reports flag as the most common mistake; quality/profitability factors remain blocked pending a `TUSHARE_TOKEN` or an equivalent free data source not yet found.
+
+---
+
+## 46. Round 32 (same continuation): US large-cap Quality+Value+Momentum composite — a genuinely important negative result about the platform's own price-proxy factors
+
+Rank 3 of `vibe_trading_next_directions.md`: both factor reports rank a sector-neutral Quality+Value+skip-month-Momentum composite as the strongest current US large-cap combination (S&P's own QVM index research: +9% relative to S&P 500 in Q1/YTD 2026). Universe: 35 well-known, long-listed (pre-2015) S&P 500 large-caps across sectors (same disclosed survivorship-bias caveat as §45 — a deliberately-current, not point-in-time-historical, universe), 2015-01-01→2026-06-29 (one code, INTC, excluded after the same >100% 20-day-move data-hygiene screen as §45.2 — a real, large single-day move during Intel's 2020s restructuring period, not a data error).
+
+### 46.1 A cleaner design was found mid-flight: reuse real Alpha Zoo price-proxy factors instead of building a custom annual-fundamentals workaround
+
+The original plan was to fetch yfinance's historical annual balance-sheet/income-statement data (`Ticker.balance_sheet`/`.financials`) to build genuine value/quality factors — but this only returns **5 fiscal years** (4 usable after NaN-trimming) per ticker, far too sparse for a properly-powered historical test. While investigating this, a much better option was found already sitting in the registry: `academic_hml` and `academic_rmw` are registered Alpha Zoo factors requiring only `close` (no fundamental data at all) — both **explicitly self-labeled `[PRICE PROXY]`** in their own source (`agent/src/factors/zoo/academic/{hml,rmw}.py`): `academic_hml` = negative 252-day return (a long-term-reversal stand-in for real book-to-market value); `academic_rmw` = negative 60-day return volatility (a low-vol stand-in for real operating profitability). Using these gives the full 11-year daily history instead of ~4 sparse annual snapshots — a straightforward, more powerful design switch made before running anything, not a post-hoc rationalization.
+
+### 46.2 Results: momentum modestly positive, but the platform's value/quality price-proxies are decisively *negative* here — and mechanistically explainable, not a fluke
+
+| Factor | IC mean | IC std | IR | Positive-IC ratio | n |
+|---|---:|---:|---:|---:|---:|
+| Momentum (`academic_carhart_mom`) | 0.0248 | 0.285 | 0.087 | 54.0% | 2614 |
+| Momentum, skip-month 12-1, risk-adjusted (constructed) | 0.0243 | 0.274 | 0.089 | 54.2% | 2614 |
+| Value proxy (`academic_hml`, -252d return) | **-0.0307** | 0.287 | **-0.107** | 44.7% | 2614 |
+| Quality proxy (`academic_rmw`, -60d vol) | **-0.0513** | 0.295 | **-0.174** | 40.9% | 2806 |
+| QVM composite (equal-weight z-score of all three) | **-0.0437** | 0.288 | **-0.152** | 41.4% | 2614 |
+
+The composite's quantile-group backtest (non-overlapping 21-day rebalance, same methodology fix as §45.2) confirms the IC sign is not noise: Group_1 (lowest composite score) reached **9.05x** final NAV over the window vs. Group_5 (highest, ostensibly "best QVM" score) at only **3.18x** — a decisively *inverted* long-short spread (-5.87), consistent across both the daily-IC and the monthly-rebalance-NAV views.
+
+**This is mechanistically explainable, not a data bug, and the explanation matters for what it does and doesn't say about real QVM investing**: skip-momentum-and-focus-on-`academic_hml` specifically — "negative 252-day return" as a value proxy is functionally indistinguishable from *long-term momentum reversed*. A stock whose price fell over the trailing year could be a genuine value opportunity (unchanged fundamentals, cheaper price) **or** a value trap (deteriorating fundamentals the price decline correctly reflects) — and a price-only proxy has no way to tell these apart, while real book-to-market value combined with profitability/leverage screens (exactly what `Systematic-Trading-Factor-Research-2.md` explicitly recommends: "sector-neutral book-to-price/earnings-yield composite, **with profitability and leverage screens**") is specifically designed to filter out the value-trap case. Likewise `academic_rmw`'s "quality" proxy is literally a low-volatility factor in different packaging (near-identical construction to §45's own weak low-vol result, IC 0.02/IR 0.07 in China A) — it is not testing genuine operating profitability at all.
+
+### 46.3 Net effect: a real, cross-cutting finding, not just a workstream-specific negative
+
+**Do not read this as "QVM doesn't work in US large-caps"** — that would contradict both reports' own Tier-A evidence (S&P's live QVM index performance) and this test simply never touched genuine fundamental value/quality data. The correct, narrower, and more useful conclusion: **this platform's price-only academic-family value/quality factors are honestly self-labeled proxies, and empirically, at least on this sample/window, they do not stand in adequately for the real thing — they actively point the wrong direction.** Combined with §45.1's `TUSHARE_TOKEN` gap (which blocks the same genuine fundamental data for China A), this is now a **confirmed, cross-cutting data-access constraint spanning both equity-factor workstreams attempted this round**, not a one-off: real value/quality factor testing on this platform, for either US or China A equities, requires either a paid/keyed fundamental data source or a free equivalent not yet found (the akshare Baidu P/B endpoint found in §45.1 is a partial exception — real P/B, not a price proxy — but no equivalent free source was found for US equities or for genuine profitability/ROE in either market). **Genuinely open**: re-test the QVM composite once/if a genuine fundamental data source is available (a `TUSHARE_TOKEN`, a paid US fundamentals provider, or a similar free workaround for US large-caps analogous to §45.1's discovery); in the meantime, momentum (modestly positive, consistent with both reports' "still live but crowded" framing) is the only leg of this specific composite with a defensible, non-inverted result on this platform as currently data-equipped.
+
+---
+
+## 47. Round 33 (same continuation): crypto CEX→DEX funding-rate carry — infra built, tested, decisively negative net of costs
+
+Rank 4 of `vibe_trading_next_directions.md`: both quant-ideas reports flagged cross-venue crypto funding-rate carry as a genuinely different mechanism from this platform's validated trend-following work, gated (per §2.2's verified platform-capability check) on a real, missing piece of data infrastructure — this platform's `funding_rate` config key is a fixed scalar, not a fetched historical time series, and no loader calls any funding-rate-history endpoint.
+
+### 47.1 Infra: confirmed feasible, built as a scoped script (not a full loader)
+
+Verified directly: `ccxt`'s unified `fetch_funding_rate_history()` method is supported on Binance, OKX, Bybit, and Hyperliquid (checked via `exchange.has["fetchFundingRateHistory"]`, all `True`) — live-tested successfully on Binance (CEX, 8-hour settlement) and Hyperliquid (DEX-perp, 1-hour settlement) with zero code changes needed, matching `CLAUDE.md`'s existing note that Hyperliquid is credential-free-reachable for OHLCV. Built a standalone fetch script (paginated, rate-limited) covering BTC/ETH/SOL across Binance, OKX, and Hyperliquid, 2025-01-01→2026-07-01. Binance returned the full requested window (1,640 rows/asset, 3 settlements/day); OKX's funding-rate-history endpoint turned out to have its own recency cap (~3 months, 279 rows — a second, distinct capacity limit from the already-documented `/market/candles` OHLCV cap in `CLAUDE.md`, worth recording for future reference); Hyperliquid returned the full window at its native hourly settlement frequency (12,000 rows/asset). Rates were annualized before comparison (`rate × settlements_per_year`) to make the two different settlement frequencies (3/day vs. 24/day) comparable.
+
+### 47.2 A real, persistent spread exists — but a naive threshold-crossing carry strategy is destroyed by turnover, not by an absent edge
+
+Binance (CEX) ran a consistently **lower** annualized funding rate than Hyperliquid (DEX) across all three assets over the full window (BTC: 3.82% vs. 8.44%; ETH: 3.54% vs. 7.21%; SOL: -0.65% vs. 2.58%) — a real, persistent premium (spread day-1 autocorrelation 0.22-0.53), consistent with Hyperliquid's different, more retail-heavy participant base per the reports' own framing. A first-pass strategy (long the cheap venue's perp / short the rich venue's, delta-neutral, triggered whenever `|spread| > 5%` annualized) was **decisively unprofitable net of a modest 0.08% round-trip cost**: net Sharpe -9.4 to -10.5 across all three assets, driven by 211-239 direction changes over just 500 days (a trade roughly every 2 days) — the 5% threshold is far too low relative to the spread's own ~7-15% annualized volatility, so it's crossed almost constantly.
+
+### 47.3 A real parameter sweep (not one unlucky threshold) confirms the negative result is structural, not a tuning artifact
+
+Following the reports' own explicit methodology ("compare static carry vs. high-spread-threshold carry vs. high-spread-plus-persistence-filter carry"), tested a genuine threshold × persistence-days grid (5 combinations, all three assets):
+
+| Asset | thresh=5%, persist=1d | thresh=10%, persist=3d | thresh=15%, persist=3d | thresh=15-20%, persist=5d |
+|---|---:|---:|---:|---:|
+| BTC | Sharpe -10.47 (218 trades) | Sharpe -2.67 (16 trades) | Sharpe -1.33 (4 trades) | 0 trades (flat) |
+| ETH | Sharpe -9.42 (211 trades) | Sharpe -2.25 (16 trades) | Sharpe -0.35 (4 trades) | 0-2 trades, still negative/flat |
+| SOL | Sharpe -9.49 (239 trades) | Sharpe -3.96 (34 trades) | Sharpe -3.22 (14 trades) | 0 trades (flat) |
+
+Tightening the threshold and adding a persistence filter reliably reduces turnover and cost drag (Sharpe improves monotonically from ~-10 toward ~-1 to -4 as trades drop from ~220 to single digits) — but **never crosses into positive territory at any tested setting**; it converges to "flat" (zero trades, no edge captured) rather than "profitable." This is the key finding: **the negative result isn't a threshold-tuning mistake, it's that the underlying gross spread-capture opportunity on these three major-cap, high-arbitrage-capital assets isn't large enough to survive even a modest transaction cost once selective enough to avoid destructive turnover** — directly consistent with both reports' own explicit caution that the naive/broad version of this trade has compressed and gone negative in parts of 2024-2025.
+
+### 47.4 Net effect and what's still genuinely open
+
+**Clean, decisive answer to the report's own stated pass/fail criterion, for this specific scope**: a CEX(Binance)-vs-DEX(Hyperliquid) funding-rate carry on BTC/ETH/SOL does **not** produce a positive, cost-surviving return stream — tested with a real parameter sweep, not a single point estimate, so this isn't dismissible as an unlucky setting. **Genuinely open, not chased further this round per this log's own "don't keep fishing" discipline**: both reports specifically flagged **mid-cap altcoins** (not majors) as the more promising candidate, citing IGARCH-like persistent (slower-decaying) spread dynamics vs. majors' heavily-arbitraged, fast-mean-reverting spreads — untested here, and a legitimate, narrower next step if this thread is picked up again, using the exact same now-built fetch infrastructure. The funding-rate-history fetch script itself is a real, reusable, scoped addition to this platform's capability (not yet promoted to a full `LOADER_REGISTRY` citizen, matching the plan's own explicit "research-script-level fetch is enough" framing) — available for whoever picks up the altcoin follow-up.
+
+---
+
+## 48. Round 34 (same continuation): cross-session US→China lead-lag — a real, correctly-measured effect that turns out to confirm market efficiency, not a tradable edge
+
+Rank 5 of `vibe_trading_next_directions.md`, an opportunistic bonus test: does the prior US trading session predict China A returns, using data already cached from §45/§46 (SPY daily OHLCV, the 42-code China A universe) with no new fetching needed. `Systematic-Quant-Trading-Ideas-2.md`'s own citation explicitly cautions the underlying academic result is "pre-cost and not automatically deployable alpha" — worth checking exactly how, not just noting the caveat.
+
+**Method**: SPY's close-to-close return on US trading day *t* was matched (via `merge_asof`, strictly-prior-date backward match, correctly handling the two markets' different holiday calendars) against three different China A return decompositions on the next China trading day: the overnight gap (prior close → today's open), the intraday move (today's open → today's close), and the full close-to-close day return.
+
+| China A return component | Corr with prior SPY return | Sign hit-rate | n |
+|---|---:|---:|---:|
+| Overnight gap (prior close → today's open) | **0.345** | **64.6%** | 966 |
+| Intraday move (today's open → today's close) | -0.026 | 48.5% | 967 |
+| Full day (close-to-close) | 0.163 | 54.0% | 966 |
+
+**A real, sizeable, correctly-measured effect exists — entirely concentrated in the opening gap, with zero continuation afterward.** China A's opening auction (~9:30am China time, well after the US session's own close ~5am China time) efficiently and almost immediately incorporates the prior US session's information: a 0.345 correlation and 64.6% directional hit-rate is a strong, genuine relationship, not noise. But the intraday component that follows the open shows essentially zero predictive power (-0.026 correlation, a hit-rate *below* a coin flip) — meaning **there is no exploitable drift or continuation once the open has already priced in the overnight information.**
+
+**This is the correct, honest reading of the source paper's own caveat, made concrete rather than just cited**: the finding confirms China A's opening price-discovery mechanism is efficient with respect to overnight US information — a market-microstructure fact, not a trading strategy. There is no way to structurally capture the 0.345 correlation as alpha: by the time China A's market opens and reflects the prior US session, the gap has already happened in the same instant it becomes tradable (you cannot buy at yesterday's China close and sell at today's open on this information — the open price itself already contains it), and the subsequent intraday session offers no measurable continuation to trade instead. **Net effect**: a clean, complete, informative result that closes this line of inquiry rather than opening a new strategy design — exactly the kind of "confirms market efficiency, don't build on this" finding worth recording plainly so a future session doesn't need to re-discover it.
+
+---
+
+## 49. Synthesis: this round's six-workstream execution against `vibe_trading_next_directions.md`
+
+All six ranked items from `vibe_trading_next_directions.md` were executed in one continuous session (§44-48 above, plus the options/volatility item explicitly left parked per that document's own §3/§6 recommendation — no real options-market data source was acquired, so nothing there was attempted, correctly). One item, cross-session lead-lag, was folded into the same round as a genuinely cheap bonus test using already-cached data rather than a separate future session.
+
+**What actually survived as a positive, buildable result**: the macro trend-following recalibration (§44) — a real, validated, DSR-checked new strategy sleeve (M1/M2 on SPY+GLD) with a genuine platform bug fix along the way. **What produced real, informative negatives or important caveats rather than new strategies**: China A and US equity factor research (§45-46) both surfaced the same underlying data-access constraint (no free genuine fundamental data for value/quality factors) as their dominant finding, with one genuinely decisive result inside that constraint (§45.4's regime-conditional value-factor sign flip); crypto CEX-DEX funding carry (§47) got real, working infrastructure built and a clean negative answer via an actual parameter sweep, not a single point estimate; cross-session lead-lag (§48) closed cleanly as a market-efficiency confirmation, not a strategy.
+
+**A pattern worth naming explicitly, since it recurred across three independent workstreams this round**: this session repeatedly found that the *external reports' top-line recommendation* needed a platform-capability reality check before being trusted — the options/volatility candidates were structurally untestable (§2.1 of `vibe_trading_next_directions.md`, verified by reading the actual engine code), the value/quality equity factors were blocked or proxy-degraded by real data-access gaps (§45.1, §46.1), and the funding-carry candidate needed new infrastructure before it could even be attempted (§47.1). In every one of these cases, the *mechanism* the reports described checked out as real and worth testing — the gap was always in what this specific platform, as currently data-equipped, could actually validate. This is the single most reusable meta-finding for whoever continues this research program: **verify data/engine capability against the actual code before trusting an external report's feasibility framing, the same discipline this log has applied to its own internal claims since §18.**
+
+---
+
+## 50. Round 35 (post-synthesis brainstorm, Task #7): the first composite crypto+macro portfolio — a real platform-capability gap found, and a genuinely important allocation-mechanics lesson
+
+Stepping back after §44-49, a specific blind spot stood out: every round in this entire research arc (50+ sections) worked within a single asset class at a time. `CompositeEngine` — a documented, first-class capability for a real shared-capital, mixed-market portfolio — had never been used once, despite now having two independently-validated, near-uncorrelated sleeves (Z4 crypto, M1 macro) sitting right there. This round built the platform's first-ever composite crypto+macro backtest.
+
+### 50.1 A second genuine platform bug, found on the very first attempt
+
+The first composite run (`codes=["BTC-USDT","SOL-USDT","SPY.US","GLD.US"]`, `config["validation"]` enabled) crashed immediately: `TypeError: loop of ufunc does not support argument 0 of type NoneType`. Root cause: `runner.py` deliberately sets `bars_per_year=None` for any cross-market backtest ("calendar-day annualization for cross-market"), and `calc_metrics` already has its own inline logic to auto-detect an effective bars-per-year from the equity curve's calendar span when it sees `None` — but `agent/backtest/engines/base.py`'s call to `run_validation(...)` (step 7, immediately after `calc_metrics` in step 6) passes the *same unresolved* `bars_per_year=None` straight through, and every function in `validation.py` (`monte_carlo_test`, `_path_metrics`, `_sharpe`, bootstrap, walk-forward) type-hints a concrete `int` and calls `np.sqrt(bars_per_year)` unconditionally. **This is exactly the kind of dormant bug this arc keeps finding**: nobody had ever run a *validated* composite backtest before, so this code path was simply never exercised. Fixed by extracting `calc_metrics`'s inline calendar-day auto-detect into a shared `resolve_bars_per_year()` helper (`agent/backtest/metrics.py`) and calling it once in `base.py` before `run_validation`, so both `calc_metrics` and `run_validation` now resolve the exact same effective bars-per-year from the same equity curve rather than one resolving it and the other crashing. Three new regression tests added (`tests/test_metrics.py::TestResolveBarsPerYear`); full suite (4619 tests now) passes with zero regressions.
+
+### 50.2 First result: naive per-asset ERC across mixed asset classes is actively *worse* than the best single sleeve, not just suboptimal
+
+With the fix applied, `v_CP1_composite_crypto_macro_full` (all 4 assets — BTC-USDT, SOL-USDT, SPY.US, GLD.US — under one top-level ERC allocation, 2023-01-01→2026-06-29, matching Z4's own native window) ran cleanly: **Sharpe 1.289, return 385.3%, max drawdown -41.4%.**
+
+Built matched-window standalone comparisons (identical window, identical per-sleeve logic) to check whether this genuinely improved on either sleeve alone:
+
+| Variant | Sharpe | Return | Max DD |
+|---|---:|---:|---:|
+| Z4 alone (BTC/SOL) | **1.548** | 567.2% | -33.0% |
+| M1 alone (SPY/GLD) | 1.073-1.078 | 25.1% | **-7.8%** |
+| CP1 — single per-asset ERC across all 4 assets | 1.289 | 385.3% | -41.4% |
+
+**CP1 is worse than Z4 alone on every metric** — lower Sharpe, lower return, *and* worse drawdown. This is not "diversification didn't help as much as hoped," it's "the specific allocation mechanism used made things actively worse." Mechanistically: per-asset equal-risk-contribution allocates capital inversely to *volatility alone*, with no regard for each sleeve's own Sharpe quality — since BTC/SOL's volatility is much higher than SPY/GLD's, per-asset ERC systematically pulls weight away from the higher-quality crypto sleeve toward the lower-quality-but-lower-vol macro sleeve. This directly confirms and sharpens this log's own long-standing §25.1 finding ("risk-parity is a risk-efficiency lever, not an alpha lever") — here showing that lever can actively point the wrong way when combined sleeves have very different alpha quality, not just when they have different volatility.
+
+### 50.3 A sleeve-level (not per-asset) allocation fixes the mechanism — and a genuine methodological trap was caught before trusting the fix
+
+The natural fix: keep each sleeve's own already-validated internal per-asset ERC completely unchanged (Z4's BTC/SOL allocation; M1's SPY/GLD allocation), and blend at the *sleeve* level instead, with a single fixed top-level weight.
+
+**A methodological trap was caught here, worth recording explicitly**: an initial quick check blended the two sleeves' *already-computed, independently-run* daily return series directly (`w·Z4_return + (1-w)·M1_return`) and found startlingly good numbers (Sharpe up to 1.86 at a ~13%/87% crypto/macro split). Two real engine tests (`v_CP2_sleeve_5050_full` at a round 50/50 split, `v_CP3_sleeve_2080_full` at 20/80) came back **meaningfully lower** than that manual estimate:
+
+| Variant | Sharpe | Return | Max DD |
+|---|---:|---:|---:|
+| Manual blend estimate, 50/50 (return-series math only) | 1.694 | 210.2% | -15.8% |
+| **CP2 — real engine, 50/50 sleeve weight** | **1.329** | 271.4% | -28.8% |
+| Manual blend estimate, inverse-vol split (~13%/87%) | 1.860 | — | -7.3% |
+| **CP3 — real engine, 20/80 sleeve weight** | **1.343** | 110.3% | **-18.1%** |
+
+**The manual blend overstates the real result because independently-compounding two separate return series is not the same as one shared-capital account.** In a real composite backtest, both sleeves' position sizes scale off the *same* combined capital pool at each rebalance — a gain in one sleeve doesn't get ring-fenced to keep compounding only within that sleeve's own future position sizing, the way summing two independently-capitalized backtests implicitly assumes. This is the third distinct instance in this research arc of the same recurring meta-lesson (after §42.3's hand-rolled-approximation-vs-real-engine mismatch and §45.2's `compute_group_equity` overlapping-returns trap): **a simplified offline approximation of a portfolio mechanic is not a substitute for running the real engine, even when the approximation looks individually reasonable.**
+
+### 50.4 Net effect: a real, nuanced allocation-quality lesson, and an honest three-way tradeoff, not a clean win
+
+Sleeve-level allocation is confirmed genuinely better than per-asset ERC across mixed asset classes (CP2/CP3 both beat CP1 on every metric) — but neither sleeve-level composite beats Z4 alone on Sharpe. The honest, complete picture, mirroring this log's own established "drawdown-focus vs. return-focus" framing (Z4 vs. Z4+Z8):
+
+- **Z4 alone** remains the highest-Sharpe (1.548), highest-return, but highest-drawdown (-33.0%) option.
+- **CP3 (20% crypto / 80% macro sleeve weight)** offers a genuine three-way improvement over M1 alone (Sharpe 1.343 vs. 1.073-1.078) with a materially better drawdown than Z4 alone (-18.1% vs. -33.0%) at a modest Sharpe cost (1.343 vs. 1.548) — a legitimate drawdown-focused combined-portfolio candidate, not a strict dominance over Z4, but a real, different point on the risk/return frontier that didn't exist before this round.
+- **CP2 (50/50)** sits between the two, not clearly better than either specific alternative on any single axis.
+
+**This is the platform's first genuine test of its own `CompositeEngine` capability, and it produced real value**: a working, validated multi-asset-class combined-portfolio design (available for further use), a second real platform bug found and fixed (the `bars_per_year=None` validation crash), and an important, generalizable lesson about risk-parity allocation mechanics when combining sleeves of different alpha quality — worth remembering for any future attempt to combine validated sub-strategies on this platform, crypto+macro or otherwise.
+
+---
+
+## 51. Round 36 (Task #8): cross-sectional crypto momentum — a real, statistically genuine IC, but too underpowered a universe to trust the P&L number
+
+Every crypto round in this entire research arc (§1-50, spanning ~50 sections) tested *time-series* trend-following — an asset's own signal against its own history. Nobody had ever tested *cross-sectional* momentum (rank a basket, go long the leaders) — a structurally different mechanism. This round reused the exact IC/IR + regime-conditioning + non-overlapping-rebalance methodology built for China A (§45) and pointed it at a 16-asset liquid-crypto universe (BTC/ETH/SOL/XRP/ADA/LINK/DOGE/AVAX/DOT/LTC/ATOM/UNI/NEAR/TRX/ETC/FIL, OKX, 2021-01-01→2026-06-29 — full clean history, zero missing-data issues).
+
+### 51.1 A real, DSR-robust cross-sectional momentum effect exists, with an interesting speed profile opposite to equities
+
+Grid-searched 40 lookback×forward-horizon combinations (7-252 day lookbacks, 7-60 day forward returns). The IC/IR strengthened **monotonically** with longer lookback and longer holding period, peaking at lookback=120d/forward=60d (IC mean 0.069, IR 0.249) — the opposite speed profile from equity momentum literature (which typically favors a 12-1-month construction with a short-term-reversal exclusion). DSR correction across the full 40-combo grid: **95.82%** — a real, non-fluke signal, though with an honest caveat both this log and the external reports would flag: with a 60-day forward-return horizon, the effective independent sample size is only ~30 (n_obs/60), not the raw ~1826 daily overlapping observations.
+
+A genuine, monotonic quantile-group backtest (non-overlapping 60-day rebalance, avoiding the §45.2 `compute_group_equity` overlap trap) confirmed the IC's direction cleanly: Group_4 (momentum leaders) final NAV 0.596 vs. Group_1 (laggards) 0.237, a positive long-short spread of 0.359 — and a regime-conditioning check (per the §45.4 methodology) found momentum notably stronger during BTC-uptrend regimes (IC 0.115) than flat/downtrend regimes (IC 0.021), consistent with the momentum literature's general finding that trend-following-adjacent effects strengthen in trending regimes.
+
+### 51.2 A real, informative reversal: the factor correctly identifies genuine winners, but the small-basket P&L backtest still loses money
+
+A direct, realistic long-short (dollar-neutral, 4-long/4-short, non-overlapping 60-day rebalance, 0.1% round-trip cost per §CLAUDE.md's researched crypto fee rates) backtest came back **negative**: Sharpe -0.08, cumulative return -36.9% — despite the positive, DSR-robust IC above. A long-only top-4 variant was directionally better (Sharpe 0.25) but still lost money in absolute terms (-42.3%), while the simple 16-asset equal-weight buy-and-hold-everything benchmark returned **+280.5%** (Sharpe 0.60) over the identical window.
+
+**Investigated rather than accepted at face value**: checked which assets the factor actually selected as "leaders" — SOL (16/31 periods), TRX (13/31), XRP (13/31), BTC (11/31), DOGE (10/31) — and compared against full-period buy-and-hold returns: SOL +4032%, TRX +1078%, DOGE +727%, XRP +352%, i.e. **the factor correctly and consistently identified the genuine long-run winners of this universe.** The negative basket P&L is therefore not evidence the ranking is wrong; it's a small-sample/undiversified-basket problem — with only 16 assets, a 4-asset basket, and just 31 non-overlapping 60-day rebalance periods, the actual realized P&L is dominated by which specific 60-day window each pick happened to be held through (entry/exit timing luck within an already-volatile asset), not a reliable estimate of what a properly diversified strategy (50-100+ liquid alts, allowing genuine cross-sectional diversification within the long and short legs) would produce.
+
+### 51.3 Net effect: a genuinely different, real mechanism from every crypto strategy validated on this platform so far — but not yet a tradable result
+
+**This is not the same conclusion as this log's prior rejections of crypto signal-space sophistication (§25.4, this arc's Y1/Y2/Z9, now 14 instances)** — those were alternative *signal constructions on the same 2-asset BTC/SOL time-series design*; this is a structurally different mechanism (cross-sectional ranking across a broad universe) with genuine, DSR-robust statistical evidence behind it. The honest, complete picture: the IC-level evidence is real and interesting (and its speed profile — favoring slower lookbacks/longer holds than equities — is itself a notable, previously-undocumented fact about this asset class); the P&L-level evidence is currently unreliable due to universe size, not a clean rejection. **Genuinely open, and a well-scoped next step if this thread is picked up again**: rerun the identical methodology on a genuinely broad universe (50-100+ liquid alts, reachable via the same OKX/Binance infrastructure already proven in this arc) with correspondingly larger quantile baskets (e.g. 10-20 assets per basket rather than 4) — the statistical groundwork (IC/IR harness, regime-conditioning, DSR correction, non-overlapping-rebalance discipline) is now built and reusable; only the universe needs to grow.
+
+---
+
+## 52. Round 37 (Task #9): multi-speed EMA ensemble on Z4 — a clean, well-motivated test that came back genuinely neutral
+
+The macro-trend recalibration round (§44) validated that a multi-speed signal blend beats a single fast crossover for that asset class. §42.4 separately ran a dense EMA-pair grid on Z4 itself, producing ready-made candidate speeds — but every one was tested as an isolated single-speed variant, never combined the way M1 blends multiple TSMOM horizons. This round closed that specific gap: built a variant blending the top-3 individually-best pairs from §42.4's grid ((8,24) Sharpe=1.492, (10,30)=1.642 [Z4 itself], (12,36)=1.434 — a clear tier ahead of (15,45)=1.177 and slower), via a discrete 2-of-3 majority-vote direction signal, with every other part of Z4's design (vol-scalar, chop-frequency scalar, ERC allocation) left byte-identical — isolating "does blending nearby EMA speeds help" as a single-variable test.
+
+**A design detail worth recording**: an initial draft used a continuous vote-strength average (e.g. 0.33/0.67/1.0 for partial agreement) rather than a discrete sign — caught before running anything, because the chop-frequency scalar's flip-detection (`direction_df.diff().abs() > 1e-9`) would have spuriously fired every time vote *strength* changed, even with no actual direction change, contaminating the comparison with an unintended second variable. Fixed by using a strict 2-of-3 majority-vote discrete sign, keeping `direction_df`'s value space identical to Z4's original `{0, 1, -SHORT_CONVICTION_TILT}`.
+
+**Result: essentially neutral, both in Sharpe and in turnover** — train Sharpe 1.636 (vs. Z4's own 1.642 — indistinguishable), true-OOS Sharpe 1.387 vs. Z4's own 1.36 (a small, likely-noise-level improvement), and trade count nearly identical in both windows (train: 218 vs. 214; OOS: 108 vs. 110) — meaning the ensemble did **not** meaningfully reduce whipsaw/turnover the way a genuine multi-speed blend is supposed to. This makes sense on reflection: (8,24)/(10,30)/(12,36) are closely-spaced, highly-correlated crossover pairs on the *same* 2-asset universe — nothing like M1's genuinely different-timescale TSMOM legs (1/3/12-month) — so a 2-of-3 majority vote among three near-identical signals rarely disagrees with any single one of them. **This is the correct, informative negative, not a design flaw**: the macro round's own multi-speed lesson doesn't mechanically transfer just by averaging nearby parameters of the *same* signal family — genuine multi-speed diversification requires genuinely different timescales, which (8,24)/(10,30)/(12,36) are not. No change to the champion recommendation (Z4 remains the answer, now with one more confirming, not contradicting, data point).
+
+---
+
+## 53. Round 38 (Task #10): funding-rate regime conditioning of Z4 — a real, non-circular signal that still doesn't monetize as an exposure overlay
+
+This round reused two things built earlier this session — the CEX/DEX funding-rate-history fetch infrastructure (§47.1) and the regime-conditioning methodology validated on China A's value factor (§45.4) — and asked a new question: should Z4's exposure be gated or dampened by funding-rate *level*, a direct, continuous crowding/leverage proxy, the same way the existing chop-frequency scalar already gates exposure by cross-asset direction disagreement? Fetched real Binance BTC+SOL funding-rate history back to 2023-01-01 (full Z4 train+OOS coverage, 3,833 rows), built a 60-day rolling z-score of the average annualized funding level.
+
+### 53.1 The initial hypothesis was wrong, and the data said so directly
+
+The natural framing — "high funding = crowded market = risk, dampen exposure" — was tested first and rejected by the data immediately: high-funding-regime days (funding z-score > 1, n=142 of 912 train days) showed **better**, not worse, forward Z4 performance (Sharpe 2.35 vs. 1.18 in normal-regime days). Investigated for circularity before trusting this (high funding could simply coincide with days Z4 is already long, in a period BTC/SOL happened to do well for unrelated reasons) — checked explicitly: 131 of 142 high-funding days were indeed already-long days, but **conditional on already being long**, high-funding days still showed meaningfully stronger performance than normal-funding long days (Sharpe 2.96 vs. 1.53, n=131 vs. 405) — a real, non-circular incremental signal, not just "funding happens to coincide with the strategy's own good days." Mechanistically, this makes sense once stated plainly: for a trend-following strategy, elevated funding reflects strong directional speculative leverage building in the *same* direction as the trend — a **trend-confirmation signal**, not a crowding-risk signal, the functional opposite of the original hypothesis.
+
+### 53.2 A real, in-sample-verified signal, converted into an actual exposure-boost overlay — and it made essentially no difference
+
+Built `v_Z17_funding_confirm_train`/`_OOS_TEST`: Z4's exact design unchanged, plus a final portfolio-level overlay (mirroring Z8's own vol-targeting overlay pattern) that boosts exposure up to 1.5x (matching Z8's established leverage-headroom precedent) when the lagged funding-z-score agrees in sign with the portfolio's net direction and exceeds a threshold — genuinely fired on 221 of 912 train days (24.2%), averaging a 4.9% gross-exposure increase, capping out at the full 1.5x on the strongest-confirmation days.
+
+**Result: essentially unchanged from Z4's baseline** — train Sharpe 1.642 (Z4: 1.641-1.642, indistinguishable) and true-OOS Sharpe 1.336 (Z4: 1.36, indistinguishable). A real, verified, non-circular in-sample statistical relationship failed to translate into a net backtest improvement once implemented as an actual position-sizing rule. **This is a genuinely useful negative result, not a wasted test**: it demonstrates that a statistically real IC-level finding doesn't automatically survive the jump to an executable trading rule — the additional variance from selectively larger positions on confirmation days apparently offset the higher expected return on those same days closely enough to net out flat, a pattern worth remembering before assuming any similarly-verified regime signal will mechanically improve a validated strategy just because its underlying correlation is real.
+
+### 53.3 A worthwhile implementation note: embedding external time-series data safely
+
+Since this platform's `signal_engine.py` contract only provides OHLCV via `data_map` (no funding-rate feed), the pre-fetched real funding-z lookup was embedded directly as a JSON *string* literal (parsed via `json.loads()` inside `generate()`'s body) rather than a raw top-level dict — deliberately avoiding `CLAUDE.md`'s already-documented negative-number-literal AST-validator gotcha (a top-level dict/list/tuple containing negative floats is rejected; a string constant is not). This is a directly reusable pattern for any future test needing to inject real external non-OHLCV data (funding rates, on-chain metrics, macro series) into a signal engine without new platform infrastructure.
+
+### 53.4 Net effect
+
+No change to the champion recommendation. A real mechanism was discovered (funding-rate level as trend confirmation, not crowding risk — itself worth remembering, and the opposite of the naive prior), root-caused for circularity before trusting it, and honestly tested to a clean, executable conclusion: it doesn't improve Z4 as an exposure overlay. The reusable funding-rate-history infrastructure (§47.1) and the JSON-embedding pattern (§53.3) are both available for future use.
+
+---
+
+## 54. Round 39 (Task #11): mid-cap altcoin CEX-DEX funding carry — the majors' negative result confirmed, decisively, not reversed
+
+§47 tested CEX(Binance)-vs-DEX(Hyperliquid) funding-rate carry on BTC/ETH/SOL and found it decisively unprofitable net of costs. Both external quant-ideas reports flagged this as potentially a majors-specific problem — majors are the most heavily-arbitraged, fastest-mean-reverting pairs, and mid-cap altcoins were explicitly proposed as the more promising candidate (citing IGARCH-like slower spread-decay dynamics). This round tested that specific, well-motivated follow-up directly, rather than treating §47's result as final.
+
+### 54.1 Infra reused correctly, with one real pagination bug caught before trusting the data
+
+Selected 12 genuine mid-caps (not majors, not micro-caps) confirmed listed on both Binance and Hyperliquid: AAVE, APT, ARB, ATOM, DYDX, ENA, NEAR, OP, SUI, TIA, INJ, SEI. Reused the exact `ccxt.fetch_funding_rate_history()` infrastructure from §47.1, extended with a real bugfix: the first fetch attempt silently truncated every Hyperliquid series to just 500 rows (~3 weeks) because Hyperliquid caps `fetch_funding_rate_history` at 500 rows per call *regardless of the requested `limit`* — the original pagination loop's stopping condition (`if len(batch) < requested_limit: break`) mistook this per-call cap for "no more data available" and silently stopped after one call. Caught by noticing the fetched date range (500 hourly rows = ~21 days) didn't match the requested 18-month window, before running any analysis on the truncated data. Fixed by changing the stopping condition to compare the pagination cursor against wall-clock "now" instead of batch size — a real, reusable fix to the funding-rate-history infrastructure itself, not just this round's script.
+
+### 54.2 The IGARCH-persistence hypothesis does not hold up empirically
+
+Both reports' specific mechanistic claim — mid-cap altcoin funding spreads decay much more slowly (IGARCH-like) than majors' fast-arbitraged spreads — was checked directly against the day-20 spread autocorrelation, the same statistic computed for majors in §47.2. **It does not hold**: day-20 autocorrelation across the 12 altcoins ranged from -0.04 to 0.12 (mean ≈0.05), essentially indistinguishable from majors' own day-20 autocorrelation (0.06-0.07 in §47.2) — no evidence of meaningfully slower spread decay for mid-caps in this sample. Day-1 autocorrelation was, if anything, comparable or higher for several altcoins (ARB 0.59, ENA 0.61, TIA 0.62) than majors (0.22-0.53), but that reflects short-term spread stickiness, not the specific slow-multi-week-decay claim the reports made.
+
+### 54.3 A parameter sweep across 12 assets: decisively negative, more so than majors
+
+Ran the identical threshold×persistence-days grid from §47.3 (8 configurations) independently on each of the 12 altcoins, taking each asset's own *best* configuration (an optimistic selection method, biasing toward finding a positive result if one exists at all):
+
+| Metric | Majors (§47, BTC/ETH/SOL) | Mid-caps (this round, 12 assets) |
+|---|---:|---:|
+| Assets with any profitable config found | 0 of 3 | 1 of 12 (ENA, Sharpe 0.29, only 2 trades — not a robust result) |
+| Best-config Sharpe range | -1.33 to -3.96 (before converging to 0/flat at tighter thresholds) | -2.17 to +0.29, mean -1.00 |
+
+**11 of 12 mid-cap altcoins showed a negative best-of-8-configurations Sharpe** — a stronger, more decisive negative than the majors' result, not a reversal of it. The one nominally positive result (ENA) rests on just 2 trades over 18 months and should not be treated as a validated finding.
+
+### 54.4 Net effect: this specific report-suggested follow-up is now closed with a clean, negative answer
+
+**Both this round and §47 together give a complete, decisive answer to the reports' own explicit hypothesis-and-follow-up structure**: naive CEX/DEX funding-rate carry (Binance vs. Hyperliquid) does not produce a profitable, cost-surviving return stream on either major-cap or mid-cap crypto assets, and the specific mechanistic reason offered for expecting mid-caps to work better (IGARCH-like persistent spreads) does not hold up against this data. This closes the funding-carry thread from `vibe_trading_next_directions.md` §3.4/§4 as fully executed rather than partially explored — a genuinely different venue pair (e.g., a DEX-vs-DEX or a non-Hyperliquid CEX-vs-CEX comparison) would be a new, separately-motivated hypothesis, not a natural next step from what's been tested here.
+
+---
+
+## 55. Round 40 (Task #12): China A momentum robustness check — direction confirmed, magnitude tempered
+
+§45.3 found China A momentum unexpectedly strong (IC mean 0.067, IR 0.246) — a genuine surprise, since both external factor-research reports independently describe classic momentum as comparatively weak/fragile in China A (MSCI's own cited research). Flagged explicitly in §45's own write-up as needing a robustness check before trusting the magnitude, given the original test's small sample (42 stocks, ~4-year window, one random draw).
+
+### 55.1 A new, independent sample: different seed, larger universe, extended window
+
+Sampled 80 CSI 300 constituents with a different random seed (777, vs. §45's 42) and an extended window (2021-07-01→2026-06-29, 6 months longer than §45's start). **A real, non-trivial data-fetch snag surfaced and was resolved rather than worked around**: the first fetch attempt succeeded for only 34 of 80 codes, with failures including well-established large-caps (Gree Electric, Pudong Development Bank) that should have had no data-availability issue — ruling out "recent listing" as the cause and pointing to a transient akshare/Eastmoney API issue instead. A retry pass recovered 15 more codes (49 of 80 total, 61%); the remaining 31 were left unrecovered after one retry rather than chased further, consistent with this round's "opportunistic, not blocking" scope. 49 stocks (5 further excluded per the standard >100%-20-day-move data-hygiene screen, leaving 44) is still a meaningfully larger, fully independent sample than §45's 42-stock test.
+
+### 55.2 Result: same direction, real, but a notably smaller magnitude than the original test
+
+| | IC mean | IR | n (daily obs) |
+|---|---:|---:|---:|
+| §45.3 original (42 stocks, seed 42, 2022-07→2026-06) | 0.0673 | **0.246** | 695 |
+| This round (44 stocks, seed 777, 2021-07→2026-06) | 0.0280 | **0.099** | 937 |
+| This round, sliced to §45's exact window only | 0.0280 | 0.099 | 937* |
+
+*The sliced-window check returned an identical result to the full extended window, since the extended window's earlier 2021-07→2022-07 data contributed proportionally little to the pooled daily-IC average — not a coding error, just a reflection of how `compute_ic_series` pools across the full date range provided.
+
+**Momentum's direction is confirmed** — still clearly positive, still stronger than short-term reversal (which stayed near-zero, IR 0.035, consistent with both the original test and the external reports' own reversal warnings) — but the **magnitude was meaningfully smaller** on this independent sample (IR 0.099 vs. 0.246, roughly 60% weaker). This is the honest, expected behavior of a single-sample IC estimate on a modest universe: §45.3's original 42-stock draw was very likely on the stronger end of what a genuinely noisy underlying relationship can produce, not a biased or wrong measurement, but one specific realization worth not over-trusting in isolation.
+
+### 55.3 Net effect: the original finding survives as directionally real, but should be cited with the weaker, more conservative estimate going forward
+
+**This does not reverse §45.3's qualitative conclusion** (China A momentum is real and, in this specific limited testing, stronger than the external reports' own priors would suggest) — but it does mean the *specific number* (IR 0.246) should not be treated as a stable, precise estimate; IR ≈0.10, averaged across the two independent draws, is a more conservative and defensible figure to cite going forward. This is exactly the kind of "verify a surprising result before building on it" discipline this log's own methodology (§1) calls for, and the check was worth the modest cost: it neither invalidated nor fully confirmed the original number, but it materially improved confidence in the direction while correctly tempering the magnitude.
+
+---
+
+## 56. Round 41 (post-round-2 brainstorm, Task #13): the crypto implied-vs-realized volatility risk premium — a genuinely new, real, and statistically overwhelming finding
+
+Stepping back after §44-55, the recurring failure pattern was "external reports describe a real options/volatility mechanism, but this platform structurally cannot test it" (§2.1 of `vibe_trading_next_directions.md`: the options engine's own "implied vol" is defined as historical realized vol, blocking dispersion trading and skew arbitrage outright). Before accepting that as final, checked directly rather than assuming: **Deribit publishes DVOL — a genuine, free, public, no-auth, options-market-derived 30-day forward-looking implied volatility index for BTC and ETH** (confirmed via Deribit's own published methodology: 2-expiry variance-swap calculation from real bid/ask option market depth, excluding ITM and far-OTM/<5%-delta options — a legitimate VIX-style construction, not a realized-vol proxy). This directly reopens the volatility-risk-premium family of strategies that were categorically closed for equities on this platform, for crypto instead.
+
+### 56.1 Data and methodology
+
+Fetched Deribit's full public DVOL history for BTC and ETH (2021-03-25→2026-07-01, 1,925 daily observations each, zero gaps) plus matching BTC/ETH price history via the existing OKX loader. Computed the classic, textbook variance-risk-premium (VRP) test: for each day *t*, compare DVOL(*t*) — the market's genuine ex-ante 30-day volatility expectation — against the actual realized volatility over the *following* 30 days (strictly out-of-sample by construction; no lookahead is possible since realized vol uses only returns after *t*). Also computed a genuine (not approximated) variance-swap payoff time series using the standard vol-point conversion `(K_vol² - RV_vol²) / (2·K_vol)`, sampled on a non-overlapping 30-day rebalance (avoiding the §45.2 overlapping-return trap).
+
+### 56.2 Result: implied vol persistently and overwhelmingly exceeds realized vol, for both assets
+
+| | Mean DVOL | Mean fwd. realized vol | VRP (mean) | t-stat | p-value | Positive-VRP ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| BTC | 61.13 | 50.87 | **10.26 vol-pts** | 28.32 | <0.000001 | 77.7% |
+| ETH | 75.14 | 66.81 | **8.33 vol-pts** | 17.10 | <0.000001 | 70.4% |
+
+A relative overpricing of ~17-20% (VRP/mean-DVOL) — genuinely large, but not wildly outside the same ballpark as the well-documented equity VRP (VIX has historically averaged roughly 25-30% above realized SPX vol), so this is economically plausible, not a suspiciously oversized anomaly.
+
+**Non-overlapping 30-day variance-swap payoff** (a short-variance position, receiving the VRP): BTC Sharpe **2.11**, ETH Sharpe **0.98**, both with high win rates (81.0%/74.6%).
+
+### 56.3 Stress-tested for the exact failure mode this log's own bar-boundary work warns about — and it survives cleanly
+
+Given how large and clean this result looked, it was checked directly against this log's own established discipline (§15's bar-boundary-offset sensitivity, and the general "don't trust a single-offset non-overlapping sample" lesson from §45.2/§51): recomputed the 30-day non-overlapping payoff at **all 30 possible calendar-day starting offsets** for both assets.
+
+- **BTC**: Sharpe ranged 1.52–2.33 across all 30 offsets (mean 1.93, std 0.24) — **zero sign flips, no offset came close to negative.**
+- **ETH**: Sharpe ranged 0.71–1.15 across all 30 offsets (mean 0.91, std 0.11) — same clean pattern, zero negative offsets.
+
+This is a materially *more* robust result than the bar-boundary work found for this repo's own crypto trend signal (§15: EMA-crossover Sharpe swung from -0.06 to +1.19 across offsets, a genuine sign flip) — the VRP effect here is stable and consistently strongly positive regardless of sampling offset, a real structural premium rather than a timing-luck artifact.
+
+**Also checked across sub-periods** (2021-04→2022-12, the more bear-market/high-uncertainty stretch, vs. 2023-01→2026-06, the calmer/bull-adjacent stretch): BTC's VRP was positive and substantial in *both* (mean 15.43 vol-pts and 7.54 vol-pts respectively) — larger during the more volatile early period, consistent with elevated crash-insurance demand pushing implied vol up more than subsequently realized, but never flipping sign or disappearing.
+
+### 56.4 The honest tail-risk caveat, found directly rather than glossed over
+
+Checked VRP during three specific, real historical crypto crash windows:
+
+| Crash window | BTC mean VRP | BTC min VRP | ETH mean VRP | ETH min VRP |
+|---|---:|---:|---:|---:|
+| May 2021 crash | **-15.54** | -52.79 | **-24.77** | -94.62 |
+| Jun 2022 Luna/3AC | +13.36 | -21.27 | -0.99 | -46.40 |
+| Nov 2022 FTX collapse | +39.89 | -5.28 | +37.24 | -33.48 |
+
+**May 2021 is the clean, expected left-tail failure case**: realized vol genuinely exceeded implied vol during that specific crash, exactly the "picking up nickels in front of a steamroller" risk any short-volatility strategy carries — a real, honest counter-example within the same dataset, not cherry-picked away. Interestingly, the Luna/3AC and FTX windows did *not* show this failure mode as starkly (FTX's 30-day-forward realized vol actually came in *below* what DVOL had priced in immediately after the collapse) — a genuinely informative nuance: not every crypto "crisis" produces a VRP blowup, only the ones where realized vol keeps accelerating for the following month, not just spiking briefly.
+
+### 56.5 What this platform can and cannot yet do with this finding — stated plainly
+
+**This is a genuine, statistically overwhelming, offset-robust empirical finding — a real capability discovery, not yet a built, deployable strategy.** The variance-swap payoff formula used is mathematically exact (not an approximation) for a genuine variance-swap instrument, and Deribit's published options fee schedule is real and findable (0.03% per side, both maker and taker pay, capped at 12.5% of option premium) — but translating this into a precise net-of-cost backtest would require actual historical option bid/ask data and a specific replication strategy's leg count (a static options strip, since no direct variance-swap product is quoted), **neither of which is available on this platform or found via a quick free-data search this round** — the same category of structural gap already documented for equity options (§2.1), just one level less severe here since the underlying *phenomenon* (unlike equity implied vol) can now genuinely be measured and confirmed real with free data, even though a fully realistic tradable P&L still cannot be constructed without paid/specialized options execution data.
+
+### 56.6 Net effect and what's genuinely open
+
+**This is the strongest, most statistically decisive new empirical finding of the entire post-deep-research brainstorm arc** (§44 onward) — more robust across sampling offsets than any prior signal tested in this log, including the platform's own validated crypto trend signal. It does not yet convert into a backtestable, tradable strategy on this platform (the same options-execution-data gap that blocked the original dispersion/skew candidates), but it is a genuine, reusable capability discovery (Deribit's free DVOL API) and a real, well-evidenced empirical fact about crypto markets worth recording for any future session that revisits crypto options. **Genuinely open, if picked up again**: (a) acquiring or finding a free source for historical Deribit option bid/ask (or at minimum settlement) prices to build an actual replication-strategy backtest; (b) testing whether DVOL's *level* (not just VRP) is itself a useful regime signal for the existing crypto trend book (Z4), a natural, cheap follow-up test using data already fetched this round.
+
+---
+
+## 57. Round 42 (Task #14): broad-universe cross-sectional crypto momentum — the small-N hypothesis is overturned, not confirmed, and the real culprit is rebalance-timing luck
+
+§51.3 found a real, DSR-robust cross-sectional momentum IC on a 16-asset crypto universe, but the actual basket-level P&L was negative — attributed at the time to an undiversified, small (4-asset) quantile basket, with "rerun on a 50-100+ liquid alt universe" flagged as the natural, well-scoped next test. This round ran exactly that test — and the result **overturns**, rather than confirms, the original hypothesis.
+
+### 57.1 A genuinely broad, liquidity-vetted universe
+
+Selected 80 well-established, long-tenured large/mid-cap crypto assets (spanning L1s, DeFi, older alts, infrastructure tokens — deliberately excluding recent-listing meme/AI tokens visible in OKX's own top-100-by-volume ranking, plus stablecoins and gold-backed tokens) and fetched via OKX. 69 returned data; 3 with under 2 years of history (DASH, ZEN, SEI — all recent OKX listings) were excluded, leaving a genuinely broad **66-asset universe** with full or near-full 2021-2026 coverage — roughly 4x §51's original 16 assets.
+
+### 57.2 The underlying daily IC evidence held up — but a real methodological wrinkle was caught and corrected
+
+Rerunning §51's exact lookback×forward grid search gave IC_mean values in the same range as before (best combo lb=252d/fwd=60d: IC_mean=0.045, vs. §51's lb=120d/fwd=60d: IC_mean=0.069) — genuinely comparable evidence strength, confirming the underlying rank-correlation signal is real on this broader universe too. **However, the naive annualized "IR" statistic (IC_mean/IC_std × √252) used for the DSR correction in both this round and §51 turned out to be inflated by forward-return-window overlap autocorrelation** — with a 60-day forward-return horizon, consecutive daily IC observations share 59 of 60 days of their target window, making the day-to-day IC series artificially smooth (low `ic.std()`) in a way that has nothing to do with genuine signal strength, and that smoothing effect intensifies at longer forward horizons — so comparing "IR" across different forward-horizon grid points (as the DSR correction did) is not a fully apples-to-apples comparison. This is a real refinement to §51's own already-disclosed "effective independent sample size is ~n/fwd" caveat, not a new bug: **IC_mean itself remains a valid, uncontaminated statistic** (each day's cross-sectional correlation is a fresh, independent-of-autocorrelation calculation); it's specifically the annualized-Sharpe-style IR/DSR machinery that needs this caveat when comparing across forward horizons. Worth remembering for any future IC-grid-search work on this platform.
+
+### 57.3 The actual test: broadening the universe made the tradable-strategy P&L worse, not better
+
+Built the same realistic long-short (dollar-neutral) and long-only backtests as §51.3, now with a proportionally larger basket (13 assets per side, vs. §51's 4-per-side):
+
+| | Sharpe | Cumulative return |
+|---|---:|---:|
+| Long-short (13-per-side, dollar-neutral) | **-0.421** | **-74.3%** |
+| Long-only (top 13) | -0.018 | -85.0% |
+| Equal-weight 66-asset universe (buy-and-hold) | 0.479 | +14.3% |
+
+**This is a worse result than §51's 16-asset/4-per-basket test**, not better — directly overturning the "small-N/undiversified-basket" explanation. (Note the 66-asset buy-and-hold benchmark itself returned far less than §51's 16-asset benchmark, +14.3% vs. +280.5% — an honest, expected consequence of diluting away SOL/TRX/DOGE's outsized 2023-2024 rallies across a much broader, more average-performing basket; this alone doesn't explain the long-short strategy's own negative P&L, though.)
+
+### 57.4 Root cause, found by applying this log's own bar-boundary discipline: rebalance-timing luck, not universe size
+
+Given how large and clean the daily IC evidence looked relative to the disappointing basket P&L, the exact same offset-sensitivity check this round already applied to the DVOL finding (§56.3) was applied here too — recomputing the non-overlapping rebalance backtest at **all 60 possible calendar-day starting offsets**:
+
+- **Long-short**: Sharpe ranged from **-0.708 to +0.220** across the 60 offsets (mean -0.227), with only **16 of 60 offsets (27%) positive** — a genuine, robust negative result, not a single unlucky draw.
+- **Long-only**: Sharpe ranged from -0.216 to +0.260 (mean 0.030), essentially a coin flip around zero, 35 of 60 offsets positive.
+
+This is the same mechanism this log's own bar-boundary work (§15) identified for a completely different signal (single-asset EMA crossover) — **rebalance/entry-timing luck dominating a signal's realized P&L, independent of whether the underlying statistical evidence for the signal is real.** Tested one further, well-motivated (not open-ended) follow-up: does more frequent rebalancing reduce this sensitivity, matching standard equity-factor-investing practice? Tested fwd = 7/14/30/60 days, same lb=252d signal, at every possible offset for each: **none cleared a robustly positive bar** (7d: mean 0.026, 4/7 offsets positive; 14d: mean -0.090; 30d: mean -0.167; 60d: mean -0.058) — rebalance frequency alone does not rescue this.
+
+### 57.5 Net effect: a genuine, disciplined close to this line of inquiry, with an important corrected takeaway
+
+**§51.3's original hypothesis is now retracted, not confirmed**: the cross-sectional crypto momentum P&L problem was never primarily about basket size/diversification — it is a rebalance-timing-luck problem, structurally similar to this platform's own well-documented bar-boundary sensitivity for time-series trend signals, now shown to apply to cross-sectional/basket-rebalanced strategies as well. The underlying daily cross-sectional IC evidence remains real and worth recording (genuinely different mechanism from every time-series crypto signal tested in this arc), but **no basket size, rebalance frequency, or offset tested in either round converts it into a robust, tradable strategy** — this closes the investigation with a clean, disciplined, corrected conclusion rather than continuing to search rebalance-scheme space further (which would cross into exactly the kind of untethered fishing this log's own DSR/PBO discipline warns against). **Genuinely open, if ever revisited**: a fundamentally different rebalancing scheme — e.g. daily incremental portfolio drift toward the target ranking (matching how real cross-sectional equity factor strategies are typically implemented, continuous small trades rather than discrete periodic jumps) — is a different, bigger design change than anything tested here, not a quick parameter tweak, and would need its own from-scratch validation.
+
+---
+
+## 58. Round 43 (Task #15): re-plumbing Z4 into the real risk_parity optimizer — a long-flagged task closed with empirical proof, not just a code change
+
+Flagged as unresolved since §33.5 and repeated in every subsequent handoff since: Z4's hand-rolled `_erc_weights()` function duplicates (rather than calls) the platform's real `agent/backtest/optimizers/risk_parity.py`. §44.2's ERC solver fix (the convex log-barrier replacement for the macro-trend composite work) gave this task fresh motivation — an opportunity to confirm the fix causes zero unintended change to the flagship crypto strategy, with an actual empirical test rather than the reasoning-only argument ("BTC/SOL's positive correlation means the bug is provably dormant for them") already recorded in `CLAUDE.md`.
+
+### 58.1 Feasibility verified directly before committing to the change
+
+Checked two things a naive attempt might have assumed rather than verified: (1) `signal_engine.py`'s AST safety validator explicitly permits `ast.Import`/`ast.ImportFrom` statements (confirmed by reading `_validate_signal_engine_source` directly) — so importing `backtest.optimizers.risk_parity` was never actually blocked; (2) the dynamically-loaded module inherits `runner.py`'s own `sys.path` via standard `importlib` loading, so the import resolves with zero platform changes needed. Verified with a minimal standalone probe backtest before touching Z4 itself — confirmed working on the first attempt.
+
+### 58.2 One real implementation snag, caught by the same validator doing its job correctly
+
+The first attempt instantiated `RiskParityOptimizer()` as a top-level module constant (`_OPTIMIZER = RiskParityOptimizer()`) — correctly rejected by the AST validator (`"Executable top-level statement Assign is not allowed"`), since a top-level constructor *call* is exactly the class of import-time side effect the validator exists to block, not a bug in the validator. Fixed by moving instantiation inside `generate()`'s own body (cheap, stateless per call) — the intended, correct pattern per this repo's own established gotcha about the validator's literal-only top-level assignment rule (`CLAUDE.md`).
+
+### 58.3 Result: empirically confirmed dormant, to 6 significant figures on train, ~1% on OOS
+
+Built `v_Z18_realoptimizer_train`/`_OOS_TEST` — Z4's design completely unchanged except `_erc_weights()` now calls `optimizer._calc_weights({"cov": cov})` on a real, per-call-instantiated `RiskParityOptimizer` instead of the duplicated inline iteration:
+
+| Window | Z4 (hand-rolled) Sharpe | Z18 (real optimizer) Sharpe | Difference |
+|---|---:|---:|---:|
+| Train | 1.6408630118201295 | 1.6408583085118769 | ~0.0003% (final_value differs by ~$23 of $4.63M) |
+| OOS | 0.9986023021363039 | 0.9892813643795757 | ~0.9% |
+
+**Train-window match is essentially exact** (6 significant figures) — the tiny residual difference is fully explained by the two solvers' different numerical convergence paths (the old fixed-point iteration's 5-iteration cutoff vs. the new L-BFGS-B solver's `ftol=1e-14` tolerance), not a behavioral difference. The OOS window's slightly larger (but still small, same-direction) gap is consistent with a shorter window (55 trades vs. 107) being more sensitive to the same order of numerical noise. **This is a clean, decisive empirical confirmation of what `CLAUDE.md` already stated on reasoning grounds alone**: BTC/SOL's ~0.7-0.8 positive correlation keeps both the old undamped iteration and the new convex solver in the well-behaved regime where they converge to (numerically) the same answer.
+
+### 58.4 Net effect: closes a long-standing task, with a genuine, if modest, maintainability benefit going forward
+
+**No behavioral change, and none was expected** — this was always an implementation-quality task, not a research question, and the empirical result confirms it was correctly scoped as such from the start. The concrete benefit: Z4's ERC weighting now has exactly one implementation behind it (the real, tested, actively-maintained `risk_parity.py`) rather than two independently-maintained copies that could silently drift apart if either were ever modified again — a genuine, if unglamorous, improvement. `v_Z18_realoptimizer_train`/`_OOS_TEST` are not proposed as replacements for the canonical `v_Z4_chopfreq_*` runs (which remain the frozen, extensively-validated reference artifacts per this log's own standing practice of not touching validated research artifacts) — they exist specifically as this task's proof-of-equivalence, and the §33.5 flag is now closed.
+
+---
+
+## 59. Round 44 (Task #16): regime-conditioned momentum+value composite for China A — regime-conditioning genuinely helps, but momentum alone remains the most robust standalone signal
+
+§45.4 found China A's value factor IC flips sign between calm and crowded-turnover regimes; §45.3 separately found momentum surprisingly strong. This round combined both findings directly: does regime-conditioning a momentum+value composite (using momentum+value in calm regimes, momentum-only in crowded regimes, per §45.4's own diagnosis) beat a naive always-on composite? Reused the cached §45 China A dataset (42 codes, 2022-07→2026-06) — no new data fetch needed.
+
+### 59.1 Daily-IC result: regime-conditioning helps, and beats momentum alone on this metric
+
+| Composite | IC mean | IR | Positive-IC ratio |
+|---|---:|---:|---:|
+| Naive always-on (momentum+value, equal z-score) | 0.0619 | 0.258 | 60.4% |
+| **Regime-switching (mom+value calm / momentum-only crowded)** | **0.0750** | **0.299** | 62.9% |
+| Momentum alone (reference) | 0.0673 | 0.246 | 60.4% |
+
+The regime-switching composite improved on both the naive composite (+16% relative IR) and momentum alone (+21% relative IR) — a genuine, real confirmation that the regime-conditioning insight from §45.4 generalizes beyond the single factor it was originally diagnosed on.
+
+### 59.2 But the realized non-overlapping basket P&L tells a different story — checked directly, not glossed over
+
+Given this round's now-established practice of checking offset-sensitivity before trusting any basket-level result (§56.3, §57.4), ran the same check here: quantile-group long-short spread across all 20 possible 20-day rebalance offsets.
+
+| | Mean long-short spread | Min | Max | Positive-offset ratio |
+|---|---:|---:|---:|---:|
+| **Momentum alone** | **1.011** | **0.565** | 1.532 | **20/20 — never negative** |
+| Naive composite | 0.031 | -0.202 | 0.175 | 13/20 |
+| Regime-switching composite | 0.293 | -0.361 | 0.932 | 16/20 |
+
+**Momentum alone is the standout, robust result here** — a long-short spread that's not just positive on average but positive at *every single one* of 20 possible rebalance offsets, the cleanest, most robust basket-level result of anything tested on this China A universe. The regime-switching composite, despite winning on the daily-IC metric, is **not** more robust than momentum alone at the basket-P&L level (16/20 positive offsets vs. momentum's 20/20, and a meaningfully lower mean spread) — though it is a real, genuine improvement over the naive always-on composite (mean spread 0.293 vs. 0.031, positive-offset ratio 16/20 vs. 13/20).
+
+### 59.3 Net effect: two metrics disagreeing is itself the finding, and it sharpens the practical recommendation
+
+**This is the same daily-IC-vs-realized-basket-P&L divergence this round already documented for cross-sectional crypto momentum (§57)** — a factor's daily cross-sectional correlation strength and its realized non-overlapping-basket tradability are related but distinct questions, and checking only one can be misleading. The honest, complete conclusion: **regime-conditioning is a real, validated improvement mechanism** (confirmed twice now — once on the single value factor in §45.4, once on a composite here) — but for this specific China A universe/window, it does not surpass momentum's own standalone robustness, which remains the strongest, cleanest, most offset-insensitive result found in either equity-factor round (§45, §46, this one). **Practical recommendation for any future work on this dataset**: lead with momentum as the primary signal; treat regime-conditioned value/composite additions as a secondary refinement worth including for genuine diversification value, not as a claimed improvement over momentum's own robustness.
+
+---
+
+## 60. Round 45 (Task #17): free on-chain crypto data feasibility check, plus a real test — another genuine signal that doesn't monetize as an overlay
+
+The last of the six-item post-round-2 brainstorm: check whether a genuinely free on-chain crypto data source exists (the original quant-ideas reports flagged on-chain signals as "regime filters, not standalone alpha" but Tier B-/C+, with paid historical data usually required). Framed explicitly as "only build a test if a genuinely free, usable source exists" — it does, so this round followed through with an actual test rather than stopping at the feasibility check.
+
+### 60.1 Feasibility: confirmed, genuinely good
+
+`blockchain.info`'s public charts API (`api.blockchain.info/charts/*`) requires no authentication and provides deep, free historical BTC on-chain metrics — confirmed directly: unique-address count, estimated transaction volume (USD), transaction count, miners' revenue, and hash rate all returned clean data going back to **2009** (6,359-6,383 daily observations, zero gaps checked). This is a genuinely good, previously-unused data source for this platform — a real capability, not just a feasibility checkbox. Caveat worth recording: this is **BTC-only** (blockchain.info is a Bitcoin-specific explorer) — no equivalent free source was checked/found for SOL specifically, so this can only condition on BTC-side on-chain activity, not a joint BTC+SOL signal.
+
+### 60.2 A real, non-circular signal — with the opposite sign from the funding-rate test
+
+Built a rolling-z-scored 7-day BTC unique-address growth rate as a regime signal and checked it against Z4's actual train-window returns, using the same circularity-check discipline as §53.1 (confirming the relationship holds *within* already-long days, not just as a coincidence of regime and position direction): high on-chain-activity days (z-score > 1.0, n=125) showed **Sharpe -0.499** vs. **Sharpe 1.952** in normal-activity days — and this held conditional on Z4 already being long (n=75 high-activity long days: Sharpe -0.375; n=469 normal-activity long days: Sharpe 2.586). **This is the opposite sign from §53's funding-rate confirmation signal** — elevated on-chain address-growth activity (plausibly a retail-euphoria/frenzy proxy) predicts *worse* forward trend-following performance, the "crowding/froth" mechanism originally (and wrongly) hypothesized for funding rate in §53, here appearing to hold for a genuinely different data source.
+
+### 60.3 Built and tested a real dampening overlay through the actual engine — a third instance of "real signal, doesn't monetize"
+
+Built `v_Z19_onchain_dampen_train`/`_OOS_TEST`: Z4's design unchanged plus a final portfolio-level dampening overlay (mirroring §53's overlay pattern, but scaling exposure *down*, not up, and applied regardless of position direction since the signal is a froth proxy, not a directional-confirmation signal).
+
+| Window | Z19 (on-chain dampener) Sharpe | Z4 baseline Sharpe |
+|---|---:|---:|
+| Full train | 1.6557 | 1.6409 |
+| Full OOS window | 0.9956 | 0.9986 |
+| True OOS slice (2025-07-01 onward) | **1.360** | **1.36** |
+
+Train showed a small (+0.9% relative) improvement; the OOS window showed a tiny (-0.3%) decline; the true frozen OOS slice matched Z4's baseline to three decimal places. **Net effect: essentially neutral, within noise** — the same "real, verified, non-circular signal fails to translate into an actual net-improving overlay" pattern this round already found twice (§52's EMA ensemble, §53's funding-rate confirmation), now a third time with a genuinely different data source and the opposite sign of relationship.
+
+### 60.4 Net effect: a real capability discovery, a real (differently-signed) mechanism, a now-three-times-repeated meta-lesson
+
+**A genuine, reusable capability was confirmed** (free, deep BTC on-chain data, previously unused on this platform) and **a real, non-circular, mechanistically-plausible signal was found and honestly tested to a clean conclusion** — but, as with two prior overlay attempts this round, a statistically real in-sample relationship did not survive the jump to an actual, executable position-sizing rule. Three independent instances of the same pattern in one round (§52, §53, §60) is itself worth treating as a meta-finding: **for this specific, already-heavily-optimized Z4 strategy, marginal regime-conditioning overlays built on top of its existing chop-frequency scalar appear to have a structurally low ceiling** — consistent with this platform's own much earlier, larger-scale finding (§25.4 and this arc's 11-14 rejected signal-space sophistication attempts) that Z4's design is close to a local optimum for this specific mechanism, and further overlay-style refinements should be expected to net out near-flat rather than assumed to help, absent a specific new reason to expect otherwise.
+
+---
+
+## 61. Round 46 (continuation): closing the DVOL-backtest open item — a genuine, checked dead end
+
+§56.5 flagged "acquiring historical Deribit option prices to build a real VRP-harvesting backtest" as genuinely open. Checked directly rather than left as an assumption:
+
+- **Deribit's own DVOL futures product** (launched March 2023, `BTCDVOL_USDC-<expiry>` naming convention, would have been the cleanest possible instrument for this — a direct, exchange-listed, tradable bet on implied vol itself) **has been delisted**: confirmed via `get_currencies` (no `BTCDVOL` entry exists among current currencies) and `get_instruments` (returns "invalid currency" for `BTCDVOL`). This product no longer exists to backtest.
+- **Historical individual-option trade reconstruction** (fetching `get_last_trades_by_instrument_and_time` for specific historical option contracts, stitching together a rolling ~30-day-tenor series) was checked directly on a real expired contract and returned **zero trades** for the tested window — even where instrument metadata exists, actual trade history is sparse/patchy for individual out-of-the-money contracts, confirming this would be a large, unreliable data-engineering project (identifying the right contract for every historical date, handling sparse/missing trades, reconstructing a realistic execution price) rather than a quick follow-up.
+
+**This closes the item as a genuine, checked dead end, not an assumption.** §56's VRP finding remains a real, valuable empirical fact (implied vol persistently exceeds realized, verified across all 30 offsets) — it simply cannot currently be converted into a backtested, tradable strategy on this platform without a paid historical options data source, and that conclusion is now based on a direct check of the two most promising free avenues, not a guess.
+
+---
+
+## 62. Round 47 (continuation): a genuine real-engine test of cross-sectional crypto momentum — confirms the negative result, and finds a real platform bug along the way
+
+§51/§57's entire cross-sectional crypto momentum investigation was a hand-rolled, offline Python simulation with discrete N-day rebalancing — never once run through the platform's actual backtest engine. Every prior instance of this exact gap in this research arc (§42.3's approximate-vs-real-engine mismatch, §45.2's overlapping-return trap, §50.3's manual-blend-vs-real-composite mismatch) has found the real engine behaves meaningfully differently from an offline approximation. This round closed that gap directly: built a genuine `signal_engine.py` outputting a continuous daily momentum-rank target weight (not a periodic discrete jump) across the same 66-asset universe from §57, and ran it through `runner.py` for real.
+
+### 62.1 A genuine, previously-undiscovered platform bug, found on the very first attempt
+
+The first run crashed with a `tushare` `api init error` (no `TUSHARE_TOKEN` configured) — surprising, since this is a pure crypto backtest with zero A-share exposure. Root-caused by direct inspection: `backtest/engines/_market_hooks.py::_MARKET_PATTERNS`'s crypto-detection regex (`^[A-Z]+-USDT$`) requires the ticker prefix to be letters-only — but **`1INCH-USDT` is a real, well-known DeFi token whose ticker starts with a digit**, so it silently fails to match, falls through every other pattern, and hits `_detect_market`'s documented "unknown defaults to a_share" fallback. This routes the entire symbol through the **a_share fallback chain** (`tencent → mootdx → eastmoney → baostock → akshare → tushare → local`) instead of the crypto chain, and when every earlier a_share source fails (as expected for a crypto ticker), it reaches `tushare` and crashes on the missing token. **Confirmed the same bug duplicated in three more places**: `src/market_data.py` (the `get_market_data` MCP tool's own routing — same fallback-to-`"tushare"` behavior), `backtest/engines/base.py::_CRYPTO_RE` (used for ffill-limit calculation — would silently apply *equity* calendar-gap tolerances to a crypto asset instead of crypto's), and `src/skills/cross-market-strategy/example_signal_engine.py` (a documented reference pattern for future strategy authors). Fixed all four by broadening the character class from `[A-Z]+` to `[A-Z0-9]+` (verified this cannot create any new collision with the other market patterns, since none of the other patterns share the `-USDT`/`/USDT` suffix). Added regression tests across three test files (`test_market_detection.py`, `test_market_data.py`, `test_base_engine.py` — the last of these had *zero* prior coverage for `_detect_market_for_align` at all, a real, previously-unrecognized test gap). Full suite passes.
+
+**This bug would have silently affected any prior or future backtest, research query, or `get_market_data` call involving any digit-leading crypto ticker** (1INCH being the most prominent, but the same class of bug would affect any future token with a similar naming convention) — dormant until this round because no prior crypto backtest in this entire research arc had ever included such a ticker in its universe (Z4/Z8/Z9/etc. all used BTC/SOL/ETH/AVAX/DOGE-style purely-alphabetic tickers).
+
+### 62.2 Result: the real engine confirms, not contradicts, the offline approximation's negative conclusion
+
+With the fix applied, the real-engine backtest (long-only, top-quintile momentum, lb=252d, 66-asset universe, 2022-01-01→2026-06-29, realistic spot fees) ran cleanly:
+
+**Sharpe -0.171, total return -68.2%, max drawdown -74.1%, 620 trades.**
+
+This is a clean, decisive negative — not just "no better than the offline test," genuinely confirming it. **The real engine's continuous daily rebalancing (entry/exit only on actual top-quantile-membership changes, not a synchronized periodic jump) does not rescue this strategy design.** This closes any residual doubt about whether §57's offline-simulation methodology itself (rather than the underlying strategy) was responsible for the negative result — it was not; the strategy design itself does not work, confirmed through two independent implementations.
+
+### 62.3 Net effect
+
+**The cross-sectional crypto momentum thread is now closed with maximum confidence** — tested via a small universe (§51), a broad universe (§57), and now the real platform engine rather than any offline approximation (§62), with every version agreeing on the negative practical-tradability conclusion despite a genuinely real underlying daily-IC signal. A real, four-location platform bug was found and fixed as a direct byproduct, per this repo's standing rule to fix defects encountered along the way — a genuine, useful outcome from a test that itself closed with a negative research result.
+
+## 63. Round 48 (user-directed): champion trade-level forensics — two mechanical discoveries and a pre-registered ZA1-ZA4 allocation-space test
+
+Directive: analyze what exactly worked and why the champions lose when they lose, then act to maximize profits. Method: full trade-level forensics of Z4/Z8 (train + true-OOS slices) and the extended-window run, then a pre-registered, capped 4-variant test of the resulting hypotheses — all allocation-space, per the log's own 5-for-5 vs 0-for-11+ category record.
+
+### 63.1 Win/loss anatomy (trades.csv forensics, all champion windows)
+
+- **Wins are even more concentrated than §25.2 recorded**: the top 3 trades supply 65-75% of gross wins in every window examined (train, OOS, Z4 and Z8 alike). The engine of profit is a handful of 26-91-day trend rides (SOL Jan-2024 long +320%/91d; SOL Jan/Mar-2026 shorts +27-28%/41-84d).
+- **The champion is regime-symmetric in P&L sourcing**: exit-year attribution on the extended window shows longs carry bulls and shorts carry bears — 2021: longs +5.9M / shorts -428k; 2022: shorts +831k / longs -1.86M; 2024: longs +15.3M / shorts -1.88M; 2025-26 OOS: shorts = 91% of net P&L. The OOS bear year (+46-66% while BTC fell) was won almost entirely by SOL shorts.
+- **Losses have one dominant recurring shape**: the *counter-regime side*. Whichever direction opposes the year's prevailing slow regime is a reliable net loser every single year of the extended window, mostly via quick 1-8-day whipsaw entries (win rates 13-25% on that side). BTC's counter-regime trades are the worst of all (train BTC shorts: 24 trades, 21% win, -266k).
+- **The worst drawdowns are post-mega-win give-backs plus chop**: the -33% train max DD runs Dec-2023→Oct-2024, i.e. starting immediately after the SOL +320% trade closed, accumulated through 25 whipsaw losses across 2024Q2-Q3.
+
+### 63.2 Mechanical discovery #1: the 0.43x short-conviction tilt is dead code in the 2-asset ERC implementation
+
+The tilt enters as `direction = -SHORT_CONVICTION_TILT` and then flows through `mag_share = |raw|/sum(|raw|)` — a ratio. When **both** assets are short (the dominant OOS state, 170 of ~425 days) the common 0.43 factor cancels exactly; when only **one** asset is active, `mag_share = 1` and it cancels again; ERC weights are direction-blind. Verified in positions.csv: mean |weight| in the both-short state (BTC 0.296/SOL 0.147) ≈ both-long state (0.311/0.168) — **shorts were never actually sized at 0.43x**. The tilt only acts on mixed-direction days (~50-65 days per window, shifting capital toward the long asset) and on pre-lookback fallback rows. Empirical confirmation (**ZA2**, `v_ZA2_notilt_ext_train`, tilt=1.0, extended window): Sharpe 1.592 vs control 1.588, DD -39.8% vs -40.7%, return +1.4% — indistinguishable. **The documented understanding of the tilt ("shorts at 43% conviction") is wrong for Z4-family engines; the parameter is a no-op to within noise and could be dropped.** (§3's original K-variant tilt finding is unaffected — that ran through the real optimizer hook on a 3-asset universe where mixed states dominate.)
+
+### 63.3 Mechanical discovery #2: structural half-deployment — mean gross exposure is 0.47
+
+The final combined weight is `erc_weight[j] * mag_share[j]` summed over active assets; with `sum(w)=sum(m)=1`, the gross is ≈0.5 at *maximum* conviction for 2 assets and lower otherwise. Measured: **mean gross 0.472, median 0.500, max 1.00** on the extended control — roughly half the book idle on a typical day, every run in the champion lineage (the real optimizer's `_scale_by_magnitude` has the identical construction). Previously undocumented; distinct from §34.1's >100%-leverage impossibility (this is idle capital *below* the cap).
+
+### 63.4 ZA1 — gross-recovery ×2 (pre-registered trial 1)
+
+Scale final weights ×2.0; `base.py`'s normalization caps realized gross at exactly 1.0, so no leverage is introduced. Extended design window (2020-11→2025-06, multi-regime): **annual return 94.8%→125.5%, Sharpe 1.588→1.565 (flat), max DD -40.7%→-44.7%, Calmar 2.33→2.81.** Measured gross: mean 0.834, median 1.000. This is *not* equivalent to §43's proportional leverage result — the 1.0 cap binds selectively, so train-window return grew far more than drawdown, within spot, no margin. Burned-window consistency check (2025-07→2026-06, disclosed as non-virgin): +50.0% / Sharpe 1.12 / DD -29.2% vs Z4's 46.1% / 1.32 / -19.2% — **in the bear year the same lever behaved much more like plain leverage** (more return, materially more DD/Sharpe cost). Side effect: trade count 191→164 (entries occasionally skipped by the engine's cash constraint at gross≈1.0 — expected, disclosed).
+
+### 63.5 ZA3 — gross-recovery under the Z8 vol overlay is degenerate (pre-registered trial 2)
+
+Stacking ×2 with Z8's portfolio vol-target overlay self-cancels: applied after the overlay it wipes out the overlay's 0.5x de-risking floor (0.5×2=1.0); applied before, the overlay's own vol targeting re-normalizes the scale away. Results confirm: train 113.0%/1.518/-46.3%; burned-OOS 56.4%/1.20/-30.3% — worse than Z8 itself (66.4%/1.43/-23.7%) on every OOS metric. **Z8's vol-conditional exposure recovery and the unconditional ×2 are substitutes, not complements, and Z8's is the smarter of the two in the bear year.**
+
+### 63.6 ZA4 — counter-regime conviction dampening (pre-registered trial 3)
+
+Targets §63.1's dominant loss shape directly, in the one place magnitude survives to execution (post-allocation, where the chop scalar lives — the same reason the tilt cancels): halve any position whose sign disagrees with that asset's own close-vs-SMA(200) regime. Size-only — entries/exits untouched, so this is allocation-space conviction weighting, not an entry gate. On top of ZA1's ×2: train 120.1%/1.560/-43.5% (2022 improves -13%→-5%; 2023/2025 give a little back); burned-OOS **57.2% / 1.29 / -27.4% — dominates ZA1 on every OOS metric** while keeping ~95% of its train return. Against Z8, still second on OOS Sharpe/DD.
+
+### 63.7 Statistical accounting and updated recommendation
+
+Four pre-registered trials (ZA1-ZA4, including the untested regime variant slot), stopped at four by design. No variant claims a Sharpe improvement over control (best new-trial train Sharpe 1.592 vs control 1.588 — nothing to deflate; the return gains are exposure-mechanical, Sharpe-neutral by construction, consistent with §43's leverage finding). The 2025-07→2026-06 window is burned as validation (used for champion selection since §33) — all OOS numbers above are consistency checks; **the only honest arbiter between Z8 and ZA4 is fresh forward data from 2026-07-01 onward.**
+
+**Recommendation, unchanged core + one new option:** Z4 stays the drawdown-focused champion and Z4+Z8 the return/Sharpe-focused champion. **ZA4 (`v_ZA4_regimeconviction_ext_train`/`_OOS_TEST`) is the new maximum-annual-return spot variant** — ~120%/yr train (highest validated multi-year annual return on the platform), +57% in the burned bear-year check, no leverage, no margin — for a mandate that explicitly prioritizes annual return over drawdown (expect ~-44% train / ~-27%+ bear-year drawdowns). Track Z8 vs ZA4 forward from 2026-07-01 before trusting either's edge over the other. Secondary cleanup finding: the `SHORT_CONVICTION_TILT` parameter can be dropped from future engines of this family (ZA2, §63.2).
+
+## 64. Round 49 (user-directed): auditing the external "missed edges" report — headline claim refuted with measurements, valid items executed, three new closures (ZB1-ZB3)
+
+An external second-pass audit (`vibe_trading_missed_edges_next_research_report.md`, 2026-07-02) proposed a prioritized roadmap. Per this log's standing discipline, every claim was verified against the actual code and run artifacts before acting. Verdict summary: the headline mechanics claim is empirically wrong, its top new-edge recommendation is real-but-unmonetizable (now tested), two of its "missed" items were already executed and closed in this log, and several items are genuinely valid and were either executed this round or added to the plan.
+
+### 64.1 Report's headline claim ("Z8's upside overlay is muted or erased by the gross cap") — REFUTED by direct measurement
+
+The report inferred from `base.py::_align`'s per-asset `clip(-1,1)` + gross normalization that Z8's 1.5x overlay upside "is likely muted or erased." Measured on `v_Z8_voltarget_train` positions vs Z4's: the realized overlay ratio (Z8 gross / Z4 gross on active days) had **median 1.38, p90 1.50; the upside expressed on 78.0% of active days, reached near-full 1.5x on 46.8%, and the gross cap bound on only 4.2% of days** (de-risk expressed on 21.1%). The reason is §63.3's structural half-deployment: base gross ≈0.5 leaves headroom below the 1.0 cap. **Z8's championship numbers are faithfully measured; no champion-ranking risk exists.** (The report's §5.1 champion table also cites unsliced OOS metrics — 30.5%/0.999 for Z4 OOS — which include the two-month warmup; the true-OOS sliced figures are 48.4%/1.36, per this log's standard methodology.)
+
+### 64.2 ZB1 ablation: Z8's OOS edge comes from the UPSIDE half, not de-risking — plus a new Z8 caveat on the extended window
+
+The report's proposed ablation was still worth running. `v_ZB1_z8derisk_ext_train`/`_OOS_TEST` (overlay clipped to [0.5, 1.0], de-risk only): burned-OOS 46.8%/1.33/-18.6% — essentially Z4 (46.1%/1.32/-19.2%), while full Z8 got 66.4%/1.43/-23.7%. **Z8's OOS outperformance is almost entirely upside exposure recovery** — the same lever as §63's ZA1, applied vol-conditionally. New caveat found while building the baseline: **Z8 had never been run on the extended 2020-2025 window before** — doing so (`v_Z8_extended_train`) shows the overlay is a slight net negative there vs Z4 (ann 91.2%/SR 1.540/DD -37.2% vs 94.8%/1.588/-40.7%). Z8's return edge is concentrated in the recent OOS year (where its 0.35 vol target was §34.2-disclosedly calibrated); on the multi-regime window it's a wash. This tempers (does not overturn) Z8's return/Sharpe-champion status and strengthens the case for arbitrating Z8 vs ZA4 on fresh forward data.
+
+### 64.3 `gross_exposure_cap` in `base.py` — deliberately NOT implemented
+
+The report's suggested config would let the daily engine run >100% gross with **no margin, borrow-cost, or liquidation modeling** — cost-free leverage, a research trap strictly worse than the current cap (returns would inflate mechanically and nothing real would be learned; §43 already showed proportional-leverage results properly via the crypto engine's real perp leverage config, which is the correct path for leverage questions). Decision recorded here so a future session doesn't "helpfully" add it.
+
+### 64.4 Exogenous-data infrastructure built (the report's genuinely valid core idea), and the attribution study
+
+Four free, no-auth historical series fetched, verified, and persisted to `research/data/`: DefiLlama aggregate stablecoin mcap (2017-11→present), Farside daily BTC ETF net flows (2024-01→present, 635 rows — fetched via the platform's own `read_url`/Jina reader; plain curl is Cloudflare-blocked), Deribit DVOL (2021-03→present), and UUP/TLT/GLD/SPY closes. Attribution of Z4's continuous 2020-2026 daily returns by lagged regime (no trades changed, no trials burned):
+
+- **DVOL level: no stable split** (second-half SR 1.64 vs 1.81) — closes the §56.6(b)/plan-P1.1 DVOL-overlay question negatively, cheaply.
+- **ETF flows: perverse sign for a long/short strategy** (Z4 earned *more* under negative flows — it was short then); one regime cycle of data; not actionable as a filter.
+- **UUP/GLD trend states: unstable across subperiods or confounded** with Z4's own direction.
+- **The one strong, both-legs-consistent survivor: direction-conditional stablecoin liquidity** — net-long days: SR 2.69 expanding vs 0.94 contracting; net-short days inverted: 1.09 contracting vs 0.32 expanding.
+
+### 64.5 ZB2 — the stablecoin liquidity dampener: real signal, REJECTED as an overlay (the fourth instance)
+
+`v_ZB2_scliquidity_ext_train`/`_OOS_TEST`: halve any position whose sign disagrees with the 30-day stablecoin-supply direction (leak-safe double lag; disclosed caveat: the motivating attribution included the burned OOS year). Result: extended 81.4%/1.556/-38.1% vs Z4's 94.8%/1.588/-40.7%; burned-OOS 29.0%/1.22/-14.6% vs 46.1%/1.32/-19.2%. It does help the loss years (2022: -11% vs -17%; 2024: +7% vs -2%) but costs half of 2023's bull (113% vs 234%) — **stablecoin supply lags trend recoveries by months, so the dampener suppresses exactly the early re-entries that fund the strategy.** This is the fourth real-signal-doesn't-monetize overlay (funding §53, EMA ensemble §52, on-chain §60, stablecoins §64) and the cleanest mechanistic explanation yet of *why* the §60-era meta-finding holds: any conditioning variable slower than the trend signal itself dampens re-entries more than whipsaw. ZA4's SMA200 dampener partially escapes this only because the traded asset's own SMA200 flips relatively quickly in crypto-sized rallies. **The report's Priority-1 recommendation is hereby fully tested and closed, not just argued against.**
+
+### 64.6 ZB3 — same-venue spot-vs-perp isolation: CLOSED, zero instrument effect
+
+The §41.4 open confound needed no new loader after all: Binance offers both spot and USDT-margined perps through the existing ccxt loader at the same UTC-midnight alignment. `v_ZB3_binanceperp_train` (BTC-USDT:USDT / SOL-USDT:USDT, fees held identical to the spot leg for isolation) vs `v_Z11_binance_train` (spot): **ann 75.4% vs 74.5%, Sharpe 1.429 vs 1.427, DD -37.6% vs -37.7%, trades 111 vs 112 — statistically identical.** Perpetual instrument mechanics have no effect on Z4; the historical Hyperliquid gap was entirely bar-boundary offset, as §41.2 suspected. Since real perp fees are *lower* than spot (~0.02%/0.05% vs ~0.08%/0.10%, §41.2), **perpetuals are the strictly preferred execution wrapper for any live deployment of this family.**
+
+### 64.7 Report scorecard and what enters the plan
+
+| Report item | Verdict | Action |
+|---|---|---|
+| Z8 gross-cap "muting" (its #1 claim) | Wrong (78% upside expression measured) | §64.1-64.2 recorded |
+| Liquidity-regime overlay (its P1) | Real signal, doesn't monetize | Tested & closed (ZB2) |
+| True funding/carry research (its P2) | Already executed & closed (§47, §53, §54) | The untested residue (OI/crowding data) → plan P3 |
+| Entry-lock overlay classification | Valid framing, already documented (CLAUDE.md, §43) | No action |
+| Macro meta-filter (its P3) | Attribution unstable (§64.4); composite already done (§50) | Not pursued |
+| China A factor program (its P4) | Valid, matches existing plan | Stays plan P2.1/P2.2 |
+| US AI/semi rotation (its P5) | Valid as hypothesis generation only | Added plan P2.5 |
+| Event/unlock calendar (its P6) | Plausible, data-heavy, untested | Plan P3 |
+| Options infra spike (its P7) | Valid, already superseded by the CryptoDataDownload lead | Stays plan P1.3 |
+| `gross_exposure_cap` engine change | Rejected — cost-free-leverage trap | §64.3 |
+
+**Champion recommendation after this round: unchanged** (Z4 drawdown-focus; Z4+Z8 return/Sharpe-focus with §64.2's new extended-window caveat; ZA4 max-annual-return). The forward-tracking arbitration (plan P0.2/P0.3) is now the single highest-value pending action — every cheap, well-motivated offline test has been run.
