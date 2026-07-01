@@ -264,18 +264,18 @@ rejected** (cost-free-leverage trap, §64.3).
 
 | Item | Status | Result / next step |
 |---|---|---|
-| P0.1 commit in-flight work | **Open — do next** | Branch still carries uncommitted platform fixes + new research docs |
-| P0.2 forward-validation ritual | **Open — highest value** | Freeze Z4/Z8/ZA4/M1/CP3; quarterly re-runs; arbitrates Z8-vs-ZA4 (§64.2 makes this decisive) |
-| P0.3 forward signal tracking (paper/shadow) | Open | Start with Z4+Z8, ZA4, CP3 |
+| P0.1 commit in-flight work | **Done** | Suite green (4,629 passed); three conventional commits on `fix-channel-settings` (§65.1) |
+| P0.2 forward-validation ritual | **Done — operational** | `forward_validation/` harness: frozen Z4/Z8/ZA4/M1/CP3/CPA3 + `run_forward.py` + append-only ledger; run quarterly |
+| P0.3 forward signal tracking (paper/shadow) | **Done (ledger form)** | Shadow tools are journal-mining, `trading_*` needs credentials (user decision); the ledger is the mechanism until then |
 | P1.1 DVOL regime overlay | **Done — negative** | No stable attribution split (§64.4); closed without burning a backtest trial |
 | P1.2 short-tilt recalibration | **Done — reframed** | Tilt is dead code in 2-asset ERC (§63.2, ZA2); ZA4's post-allocation regime dampener is the working replacement |
 | P1.3 VRP monetization (CryptoDataDownload Deribit chains) | Open — needs small budget decision | The highest-Sharpe untraded edge on the board (gross 2.11) |
 | P1.4 spot-vs-perp isolation | **Done — closed** | Zero instrument effect (ZB3, §64.6); perps are the preferred live wrapper (cheaper fees) |
 | NEW: exogenous data bridge | **Done** | `research/data/`: stablecoin mcap, BTC ETF flows, DVOL, macro ETFs — refresh scripts trivial to re-run |
 | NEW: liquidity/macro/ETF-flow overlays on Z4 | **Done — closed negative** | ZB2 + attribution (§64.4-64.5); do not revisit slower-than-trend conditioning variables as Z4 overlays |
-| P2.1 China A momentum sleeve + event/flow conditioning | Open | Unchanged; next big build after P0 |
+| P2.1 China A momentum sleeve + event/flow conditioning | **In progress** | Real-engine pilot running (CNM1 vs equal-weight control, §65+); event/flow conditioning only after the plain sleeve validates |
 | P2.2 TUSHARE_TOKEN decision | Open (user budget call) | Unblocks China A value/quality |
-| P2.3 composite refresh | Open | Now include ZA4 as a candidate crypto sleeve |
+| P2.3 composite refresh | **Done** | CPA3 (full-deploy ×2 + crypto-leg regime damp + 30/70): ann 45.7%, Sharpe 1.402, Calmar 1.55 — best composite yet; frozen for forward validation (§65.2) |
 | P2.5 (new) US AI/semi rotation study | Open — hypothesis-generation only | From the report's P5; treat archive short-window runs as hypotheses, never evidence |
 | P3 additions | Open, deferred | OI/crowding data (report P2 residue), event/unlock calendars (report P6) |
 

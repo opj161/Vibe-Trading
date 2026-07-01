@@ -2093,3 +2093,24 @@ The §41.4 open confound needed no new loader after all: Binance offers both spo
 | `gross_exposure_cap` engine change | Rejected — cost-free-leverage trap | §64.3 |
 
 **Champion recommendation after this round: unchanged** (Z4 drawdown-focus; Z4+Z8 return/Sharpe-focus with §64.2's new extended-window caveat; ZA4 max-annual-return). The forward-tracking arbitration (plan P0.2/P0.3) is now the single highest-value pending action — every cheap, well-motivated offline test has been run.
+
+## 65. Round 50 (autonomous continuation): P0 hygiene executed, composite refresh — CPA3 becomes the best composite yet, and a forward-validation harness now exists
+
+### 65.1 P0 hygiene (plan P0.1-P0.3) — done
+
+Full suite green (4,629 passed, 6 skipped); all in-flight platform fixes and research docs committed (`fix(backtest)`, `docs(research)`, `feat(validation)` commits on `fix-channel-settings`). Two research docs deleted by an earlier session without relocation (`vibe_trading_bar_boundary_deep_dive.md`, `vibe_trading_deep_research_prompts.md`) were restored into `research/` alongside their sibling reports before committing, since `CLAUDE.md` still references them. **`forward_validation/` now exists**: frozen engine+config snapshots (Z4, Z8, ZA4, M1, CP3 — and CPA3, below), `run_forward.py` (uniform 13-month warmup, true-window slicing from 2026-07-01, append-only `results.csv` ledger with engine-hash drift detection), and a README with the ritual rules. Smoke-tested end-to-end: all strategies run; true window is 0-1 bars as of 2026-07-02, as expected. The shadow-account MCP tools turned out to be trade-journal mining (not signal tracking), and `trading_*` paper accounts need credentials — so this ledger *is* the P0.3 forward-tracking mechanism until a broker connection is a user decision.
+
+### 65.2 Composite refresh (plan P2.3): the §63 full-deployment lever applied at the composite level
+
+The composite has the same structural half-deployment as the crypto sleeve (sleeve ERC products sum to ≈0.5 gross before sleeve weighting). Pre-registered 3-trial grid on CP3's own full window (2023-01→2026-07-01, includes the burned OOS year — no virgin OOS exists for any CP-family run; forward ledger is the arbiter):
+
+| Variant | Ann. return | Sharpe | Max DD | Calmar |
+|---|---:|---:|---:|---:|
+| CP3 control (20/80, 1x) | 23.7% | 1.343 | -18.1% | 1.31 |
+| CPA1 — full-deploy ×2 | 32.4% | 1.288 | -25.8% | 1.26 |
+| CPA2 — ×2 + ZA4-style crypto-leg regime dampener | 34.5% | 1.365 | -23.7% | 1.46 |
+| **CPA3 — CPA2 with crypto sleeve 30% (vs 20%)** | **45.7%** | **1.402** | **-29.5%** | **1.55** |
+
+**CPA3 is the best composite measured to date** — highest Sharpe *and* Calmar of the family, nearly double CP3's return, while keeping DD under -30% (vs Z4-alone's -33% at Sharpe 1.55 on the matched window). Measured deployment: CPA2/3 gross mean 0.78 with the 1.0 cap binding on 61% of days (vs ~0.5 gross before). Grid stopped at 3 per discipline; **CPA3 frozen into `forward_validation/frozen/CPA3` immediately** — its numbers include the burned year, so only the forward ledger can validate it against CP3/Z4.
+
+**A scaffolding bug worth recording** (it produced a byte-identical "CPA3"=CPA2 on the first attempt): a `str.replace("SLEEVE_CRYPTO_WEIGHT = 0.2", ..., 1)` hit the same string inside a *comment* above the real assignment — the assertion "new string present" passed while the actual constant was unchanged. Caught because byte-identical metrics across a real weight change is impossible; fixed by anchoring the replacement to the newline-delimited assignment. Lesson: assert on the *assignment line*, and treat identical metrics across supposedly-different configs as a mechanical bug until proven otherwise.
