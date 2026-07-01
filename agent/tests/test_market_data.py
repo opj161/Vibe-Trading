@@ -41,6 +41,8 @@ from src.market_data import (
         ("00700.HK", "yahoo"),
         ("BTC-USDT", "okx"),
         ("ETH/USDT", "ccxt"),
+        ("1INCH-USDT", "okx"),  # digit-leading ticker regression (real token: 1inch)
+        ("1INCH/USDT", "ccxt"),
         ("local:my_file", "local"),
         ("something_weird", "tushare"),  # documented fallback
     ],

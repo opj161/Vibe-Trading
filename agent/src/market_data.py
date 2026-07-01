@@ -23,8 +23,8 @@ _SOURCE_PATTERNS = [
     (re.compile(r"^\d{6}\.(SZ|SH|BJ)$", re.I), "tencent"),
     (re.compile(r"^[A-Z]+\.US$", re.I), "yahoo"),
     (re.compile(r"^\d{3,5}\.HK$", re.I), "yahoo"),
-    (re.compile(r"^[A-Z]+-USDT$", re.I), "okx"),
-    (re.compile(r"^[A-Z]+/USDT$", re.I), "ccxt"),
+    (re.compile(r"^[A-Z0-9]+-USDT$", re.I), "okx"),
+    (re.compile(r"^[A-Z0-9]+/USDT$", re.I), "ccxt"),
 ]
 
 

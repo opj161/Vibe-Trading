@@ -148,6 +148,34 @@ def by_exit_reason_stats(trades: List[TradeRecord]) -> Dict[str, Dict[str, Any]]
     return result
 
 
+def resolve_bars_per_year(bars_per_year: Optional[int], equity_curve: pd.Series) -> int:
+    """Resolve ``bars_per_year=None`` (the cross-market/CompositeEngine
+    convention) to a concrete annualisation factor auto-detected from the
+    equity curve's own calendar-day span, so every caller downstream of
+    engine selection sees a real int rather than needing its own None
+    handling.
+
+    Args:
+        bars_per_year: Explicit bars-per-year, or None for calendar-day
+            auto-detect (cross-market backtests, where no single source's
+            trading-day convention applies).
+        equity_curve: Equity time series (index=timestamp), used only to
+            derive an effective bars/year when ``bars_per_year`` is None.
+
+    Returns:
+        A concrete int bars-per-year value.
+    """
+    if bars_per_year is not None:
+        return bars_per_year
+    n = len(equity_curve)
+    if n == 0:
+        return 252
+    first, last = equity_curve.index[0], equity_curve.index[-1]
+    calendar_days = (last - first).days
+    years = calendar_days / 365.25 if calendar_days > 0 else 1.0
+    return int(n / years) if years > 0 else 252
+
+
 def calc_metrics(
     equity_curve: pd.Series,
     trades: List[TradeRecord],
@@ -172,15 +200,7 @@ def calc_metrics(
         return _empty_metrics(initial_cash)
 
     n = len(equity_curve)
-
-    # Calendar-day annualization for cross-market (bars_per_year=None)
-    if bars_per_year is None:
-        first, last = equity_curve.index[0], equity_curve.index[-1]
-        calendar_days = (last - first).days
-        years = calendar_days / 365.25 if calendar_days > 0 else 1.0
-        bpy = int(n / years) if years > 0 else 252
-    else:
-        bpy = bars_per_year
+    bpy = resolve_bars_per_year(bars_per_year, equity_curve)
 
     port_ret = equity_curve.pct_change().fillna(0.0)
 

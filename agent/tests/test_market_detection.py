@@ -54,6 +54,15 @@ class TestDetectMarket:
             ("BTC-USDT", "crypto"),
             ("ETH-USDT", "crypto"),
             ("BTC/USDT", "crypto"),
+            # Digit-leading crypto tickers (real tokens: 1inch, 0x) --
+            # regression for a bug where these silently fell through to the
+            # a_share default, routing through the a_share fallback chain
+            # and crashing on an unconfigured TUSHARE_TOKEN when actually
+            # backtested. See vibe_trading_research_findings.md's
+            # cross-sectional crypto momentum real-engine round.
+            ("1INCH-USDT", "crypto"),
+            ("1INCH/USDT", "crypto"),
+            ("0X-USDT", "crypto"),
             # Futures
             ("IF2406.CFFEX", "futures"),
             ("AU2412.SHFE", "futures"),

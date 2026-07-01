@@ -58,7 +58,7 @@ def _run_card_data_sources(config: Dict[str, Any], loader: Any) -> List[str]:
 
 # ─── Market detection (lightweight, for signal alignment only) ───
 
-_CRYPTO_RE = _re.compile(r"^[A-Z]+-USDT$|^[A-Z]+/USDT$", _re.I)
+_CRYPTO_RE = _re.compile(r"^[A-Z0-9]+-USDT$|^[A-Z0-9]+/USDT$", _re.I)
 _FOREX_RE = _re.compile(r"^[A-Z]{3}/[A-Z]{3}$|^[A-Z]{6}\.FX$")
 
 
@@ -475,8 +475,18 @@ class BaseEngine(ABC):
         # 7. Validation (optional — triggered by config["validation"])
         if config.get("validation"):
             from backtest.validation import run_validation
+            from backtest.metrics import resolve_bars_per_year
+            # bars_per_year is None for cross-market (CompositeEngine)
+            # backtests -- validation.py's functions all type-hint a
+            # concrete int and call np.sqrt(bars_per_year) unconditionally,
+            # so None must be resolved here first (same calendar-day
+            # auto-detect calc_metrics already applies internally above;
+            # first surfaced by the first-ever validated composite
+            # crypto+macro backtest, see vibe_trading_research_findings.md
+            # section 50).
+            resolved_bpy = resolve_bars_per_year(bars_per_year, equity_series)
             v_results = run_validation(
-                config, equity_series, self.trades, self.initial_capital, bars_per_year,
+                config, equity_series, self.trades, self.initial_capital, resolved_bpy,
             )
             m["validation"] = v_results
             # Write validation.json artifact. _write_artifacts() (step 8) is

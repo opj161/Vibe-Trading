@@ -18,6 +18,7 @@ from backtest.metrics import (
     by_symbol_stats,
     calc_bars_per_year,
     calc_metrics,
+    resolve_bars_per_year,
     win_rate_and_stats,
 )
 from backtest.models import TradeRecord
@@ -88,6 +89,37 @@ class TestBarsPerYear:
     def test_unknown_interval(self) -> None:
         # Falls back to 1 bar/day
         assert calc_bars_per_year("2H", "tushare") == 252
+
+
+class TestResolveBarsPerYear:
+    """Regression: run_validation's callers (base.py) previously passed
+    bars_per_year=None straight through for cross-market/CompositeEngine
+    backtests -- validation.py's monte_carlo/bootstrap/walk_forward
+    functions all type-hint a concrete int and call np.sqrt(bars_per_year)
+    unconditionally, crashing with TypeError on the first-ever validated
+    composite backtest run. calc_metrics already had its own inline
+    calendar-day auto-detect for None; this extracts it into a shared
+    helper so run_validation's caller can resolve None the same way before
+    passing it on. See vibe_trading_research_findings.md section 50."""
+
+    def test_concrete_value_passed_through(self) -> None:
+        eq = pd.Series([1.0, 1.01, 1.02], index=pd.bdate_range("2025-01-01", periods=3))
+        assert resolve_bars_per_year(365, eq) == 365
+        assert resolve_bars_per_year(252, eq) == 252
+
+    def test_none_resolves_to_calendar_day_estimate(self) -> None:
+        # 366 daily bars spanning exactly 365 calendar days -> ~365 bars/year
+        eq = pd.Series(
+            np.linspace(1.0, 1.1, 366),
+            index=pd.date_range("2025-01-01", periods=366, freq="D"),
+        )
+        resolved = resolve_bars_per_year(None, eq)
+        assert isinstance(resolved, int)
+        assert 360 <= resolved <= 370
+
+    def test_none_with_empty_curve_falls_back_to_252(self) -> None:
+        eq = pd.Series([], dtype=float)
+        assert resolve_bars_per_year(None, eq) == 252
 
 
 # ---------------------------------------------------------------------------

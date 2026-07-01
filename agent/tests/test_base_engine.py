@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.engines.base import BaseEngine, _align, _load_optimizer
+from backtest.engines.base import BaseEngine, _align, _detect_market_for_align, _load_optimizer
 from backtest.engines.china_a import ChinaAEngine
 from backtest.engines.crypto import CryptoEngine
 from backtest.models import Position
@@ -127,6 +127,37 @@ class TestLoadOptimizer:
     def test_invalid_optimizer_returns_none(self) -> None:
         opt = _load_optimizer({"optimizer": "nonexistent_module_xyz"})
         assert opt is None
+
+
+# ---------------------------------------------------------------------------
+# _detect_market_for_align
+# ---------------------------------------------------------------------------
+
+
+class TestDetectMarketForAlign:
+    def test_crypto_hyphen(self) -> None:
+        assert _detect_market_for_align("BTC-USDT") == "crypto"
+
+    def test_crypto_slash(self) -> None:
+        assert _detect_market_for_align("ETH/USDT") == "crypto"
+
+    def test_digit_leading_crypto_ticker(self) -> None:
+        """Regression: '1INCH-USDT' (a real token) used to fall through to
+        the 'equity' default here since the regex required a leading
+        letter, giving crypto assets an equity-appropriate (not
+        crypto-appropriate) ffill_limit. See
+        vibe_trading_research_findings.md's cross-sectional crypto momentum
+        real-engine round for the full story (same regex bug independently
+        found in three other places: _market_hooks.py, market_data.py, and
+        the cross-market-strategy skill example)."""
+        assert _detect_market_for_align("1INCH-USDT") == "crypto"
+        assert _detect_market_for_align("1INCH/USDT") == "crypto"
+
+    def test_forex(self) -> None:
+        assert _detect_market_for_align("EUR/USD") == "forex"
+
+    def test_equity_default(self) -> None:
+        assert _detect_market_for_align("AAPL.US") == "equity"
 
 
 # ---------------------------------------------------------------------------

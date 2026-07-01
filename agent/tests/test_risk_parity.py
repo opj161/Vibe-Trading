@@ -53,6 +53,34 @@ class TestRiskParityCalcWeights:
         w = opt._calc_weights({"cov": cov})
         np.testing.assert_allclose(w, np.ones(3) / 3, atol=1e-10)
 
+    def test_negatively_correlated_multi_asset_stays_nonnegative(self) -> None:
+        """Regression for a real bug: the old undamped multiplicative
+        iteration diverged into large-magnitude NEGATIVE weights on a
+        realistic n>2 portfolio with a genuinely negatively-correlated
+        asset (e.g. equities vs. bonds) -- silently flipping signal
+        direction downstream. Every prior test used i.i.d./weakly-
+        correlated synthetic returns and never caught this. Reproduced
+        with an equities/gold/bonds/FX-style covariance structure."""
+        rng = np.random.default_rng(0)
+        n = 2000
+        eq = rng.normal(0, 0.012, n)
+        bond = -0.5 * eq + rng.normal(0, 0.006, n)
+        gold = 0.1 * eq + rng.normal(0, 0.010, n)
+        fx = -0.2 * eq + rng.normal(0, 0.003, n)
+        cov = np.cov(np.column_stack([eq, gold, bond, fx]).T)
+
+        opt = RiskParityOptimizer()
+        w = opt._calc_weights({"cov": cov})
+
+        assert np.all(w >= 0), f"weights must stay non-negative, got {w}"
+        assert abs(w.sum() - 1.0) < 1e-8
+
+        # Genuine ERC property: marginal risk contributions should be
+        # equal across assets, not just "not negative".
+        port_vol = np.sqrt(w @ cov @ w)
+        rc = w * (cov @ w) / port_vol
+        assert np.allclose(rc, rc.mean(), rtol=0.02), f"risk contributions not equal: {rc}"
+
     def test_single_asset(self) -> None:
         cov = np.array([[0.04]])
         opt = RiskParityOptimizer()
