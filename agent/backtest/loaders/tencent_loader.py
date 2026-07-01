@@ -71,6 +71,13 @@ class DataLoader:
                 logger.warning("tencent failed for %s: %s", code, exc)
         return result
 
+    # Tencent's kline endpoint caps every response at 500 bars regardless of
+    # the requested date range, silently returning only the MOST RECENT 500
+    # trading days of the span. Requests must therefore be chunked into
+    # windows short enough to stay under the cap. 700 calendar days is
+    # ~480 trading days — safely below 500.
+    _MAX_WINDOW_DAYS = 700
+
     def _fetch_one(
         self, code: str, start_date: str, end_date: str,
     ) -> Optional[pd.DataFrame]:
@@ -88,6 +95,31 @@ class DataLoader:
         else:
             return None
 
+        start = pd.Timestamp(start_date)
+        end = pd.Timestamp(end_date)
+        window = pd.Timedelta(days=self._MAX_WINDOW_DAYS)
+
+        frames: List[pd.DataFrame] = []
+        chunk_end = end
+        while chunk_end >= start:
+            chunk_start = max(start, chunk_end - window)
+            df = self._fetch_window(
+                tencent_code,
+                chunk_start.strftime("%Y-%m-%d"),
+                chunk_end.strftime("%Y-%m-%d"),
+            )
+            if df is not None and not df.empty:
+                frames.append(df)
+            chunk_end = chunk_start - pd.Timedelta(days=1)
+
+        if not frames:
+            return None
+        combined = pd.concat(frames).sort_index()
+        return combined[~combined.index.duplicated(keep="first")]
+
+    def _fetch_window(
+        self, tencent_code: str, start_date: str, end_date: str,
+    ) -> Optional[pd.DataFrame]:
         url = (
             f"{_BASE_URL}?param={tencent_code},day,"
             f"{start_date},{end_date},500,qfq"
