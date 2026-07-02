@@ -2182,3 +2182,49 @@ Full suite after all five fixes: 4,670 tests passed (4,629 baseline + 41 new), z
 ### 67.3 Updated recommendation
 
 No champion ranking changes — Z4 (drawdown), Z4+Z8 (return/Sharpe, per §64.2's caveat), ZA4 (max annual return) stand. **M1 and M2's standalone numbers are now meaningfully better than previously reported** (M1 Sharpe 0.616 vs. the original 0.535) — worth reflecting in any external-facing summary of the macro sleeve's quality. The data-sufficiency tripwire and DSR/PBO consolidation are now standing infrastructure any future research round should use rather than rebuild.
+
+## 68. Round 53 (user-directed): two external local projects' data inventories assessed, and one rejected strategy independently re-validated on this platform's own engine
+
+Directive: scan `/home/j_opp/projects/microforge/data` and `/home/j_opp/projects/edgeforge/data` (two unrelated local projects) and assess whether any data unlocks new backtesting capability, then — per explicit follow-up — don't take either project's own "rejected" verdicts at face value; re-test anything promising through this platform's own engine before accepting a negative conclusion.
+
+### 68.1 Inventory summary
+
+**edgeforge** (`~/projects/edgeforge`) is a mature Hyperliquid-centric research/campaign platform with its own DSR/walk-forward/plateau/stress-test validation gates and a scorecard ledger. Genuinely new, usable data: **broad Hyperliquid funding-rate history** (`lake/funding/<SYMBOL>/`, 45 assets, hourly, most from 2023-05→2026-06, Parquet); **minute-level open-interest/mark-price/premium/volume asset-context data** (`lake/asset_ctxs/<SYMBOL>/`, ~20 assets, 2024-03→2026-06 — genuinely fills the "no OI/crowding data" gap this platform previously had no source for); multi-timeframe candles (1m/1h/4h/8h/12h/1d) for ~46 Hyperliquid assets back to 2020-2022 for some; and a very broad tick-level (sub-minute, trade-triggered) capture (`raw/hydromancer/candles_1s`, ~200+ Hyperliquid spot+perp instruments, Aug 2025→Feb 2026+, 8.2GB). **90 of edgeforge's own scorecards, spanning funding-carry, funding-overlay, breakout, rotation, and time-series-momentum families, were ALL verdict=REJECTED** — a strong, independent, unprompted corroboration of this repo's own funding-carry (§47, §54) and signal-timing-sophistication (§25.4) negative findings, from a completely different codebase and validation framework.
+
+**microforge** (`~/projects/microforge`) is a market-microstructure/live-execution-focused platform. Its genuinely new data is narrower: **deep Binance USDM BTC-PERP/ETH-PERP funding history back to 2021-01-01** (extending 2+ years earlier than edgeforge's Hyperliquid-only 2023-05 start) via `normalized/event_type=funding_state_v1`; L2 order-book and trade-tick capture (`normalized/event_type={book_top_v1,trade_v1}`) is only a few recent days, not usable for backtesting; a `history/venue=bybit_v5/data_type=liquidity` path turned out to be a single point-in-time bid/ask/spread health-check snapshot, not a liquidation time series. No options/IV data exists in either project (confirmed by targeted search).
+
+### 68.2 Independent re-validation: edgeforge's 9-asset ensemble-momentum candidate (scorecard `705504f2f8b2`)
+
+This was the most sophisticated rejected candidate found (multi-lookback [180,360,540]-bar momentum ensemble, vol-targeting, 9-asset universe BTC/DOGE/ETH/HYPE/NEAR/SOL/TON/WLD/XRP, 4h bars) and the one whose specific rejection reason — DSR 0.30 vs. 0.95, "deflated for 67 ledger trials" — is exactly the kind of result that might be an artifact of edgeforge's own large sweep size rather than a genuine invalidation of the underlying signal (the same distinction this repo's own §38 CSCV-PBO work already draws between "is the edge real" and "is picking this exact variant reliable").
+
+**Rebuilt as a genuine `signal_engine.py`** (`v_EF1_ensemble9_train`) on this platform's real engine: same universe (all 9 assets confirmed reachable via `CCXT_EXCHANGE=hyperliquid`, edgeforge's own native venue — matches its exact data source), same lookback/vol-target parameters, but using this platform's own validated ERC (equal risk contribution) cross-asset allocation rather than guessing at edgeforge's undisclosed internal combination logic — deliberately the fairest, most favorable treatment this platform's own track record argues for (allocation-space sophistication is the one lever with a 5-for-5 record, per the synthesis doc). Window: 2024-12-10 (HYPE's real listing date, confirmed via the new data-sufficiency tripwire firing correctly and being manually verified as a genuine late listing, not a bug) → 2026-06-30.
+
+**Two real implementation bugs were found and fixed before trusting any result** — a useful methodological lesson in its own right:
+1. First pass: mean gross exposure was only **8.2%** (a vol-scalar with no floor was crushing position size for high-realized-vol altcoins). Added a floor matching Z4's own `VOL_SCALAR_MIN=0.25` convention — exposure barely moved.
+2. Root-caused properly: the `ERC-weight × mag_share` combination (§63.3's exact structural-half-deployment pattern, already documented for Z4's 2-asset book) compounds **multiplicatively** for N=9 assets, since both factors are independently ~1/9-scale ratios — crushing gross to ~1/N instead of Z4's tolerable ~1/2. Fixed by using ERC weights directly (this platform's own default `risk_parity`-without-`respect_magnitude` behavior, the correct treatment for an N>2 book). Gross exposure corrected to a properly full-deployment mean 0.68 / median 1.00.
+
+**Final, properly-implemented result: no edge, corroborating edgeforge's own rejection — with more rigor, not less.**
+
+| Check | Result |
+|---|---|
+| Sharpe | 0.040 |
+| Total return | -6.3% |
+| Max drawdown | -35.1% |
+| DSR (this platform's new consolidated function, `n_trials=1` — a single pre-registered design, not a 67-trial-deflated sweep) | **51.99%** — a coin flip |
+| Bootstrap Sharpe CI (95%) | **[-1.54, +1.50]** — straddles zero enormously |
+| Walk-forward | **1 of 4 windows profitable** (25% consistency); window Sharpes -0.42, -0.18, +0.67, -0.42 |
+| Monte Carlo permutation p-value | **0.94** — the realized path is worse than 94% of random shuffles of the same trade P&L |
+
+Every one of these is a genuinely independent, more rigorous check than edgeforge's own gate (which only reported the multi-trial-deflated DSR) — and every one agrees: **this specific design has no real edge**, not merely "failed a strict multi-trial correction." This is a stronger, more defensible negative result than either platform produced alone, and it was reached only after ruling out two real implementation bugs that could otherwise have manufactured a false negative for a boring mechanical reason.
+
+### 68.3 microforge: no strategy worth porting
+
+microforge's own `trend_core` strategy (`config/strategies/trend_core.example.yaml`) is a single-asset EMA(24,96) trend design with ATR stops and a funding-based long-block — structurally simpler than Z4 (no cross-asset portfolio construction at all). Its own internal `deflated_sharpe` research reports (dozens, spanning 2026-06-28→06-30, BTC-PERP/ETH-PERP only) never exceed **DSR 0.67**, mostly far lower (down to ~0.0001) — no evidence of a hidden validated edge there either, consistent with (not contradicting) the broader cross-platform pattern that single-asset trend without allocation-space sophistication doesn't survive rigorous validation. Its `track0_basis_funding` strategy is explicitly framed as pre-MVP (`basis_capture_fraction: 0`, i.e. basis convergence isn't even modeled yet) — less mature than the funding-carry question this repo has already closed three times over (§47, §54, and now corroborated by edgeforge's 8+12 rejected scorecards). **Conclusion: porting microforge's strategy is not beneficial** — it would not be expected to outperform Z4, and its own validation numbers don't suggest otherwise.
+
+### 68.4 What's actually worth doing next with this newly-discovered data
+
+1. **Open-interest/crowding regime signal on Z4** (edgeforge's `asset_ctxs` minute-level OI, 2024-03→2026-06) — a genuinely new, previously-unavailable data class (not a re-test of anything already closed). Follows the same disciplined attribution-then-overlay pattern as §64.4-64.5's stablecoin-liquidity test; expect it to land in the same "real signal, doesn't monetize as an overlay" bucket as funding/on-chain/EMA-ensemble (§52/§53/§60/§64.5) given the now 4-for-4 pattern, but worth the cheap, well-motivated check.
+2. **Deep bar-boundary-offset re-test using genuine tick data** (edgeforge's 1-second Hyperliquid candles) — §15's controlled experiment used a handful of resampled offsets from 4H bars; true tick data would allow testing literally every offset, the most rigorous version of a question this repo has flagged as economically real (not overfitting) since §15.
+3. **Not worth doing**: any further funding-carry/basis test (closed 3x independently: §47, §54, edgeforge's 20 rejected scorecards); porting microforge's trend_core or basis_funding strategies (§68.3); broader cross-sectional momentum using edgeforge's wider universe (already closed on rebalance-timing-luck grounds, §57, a structural finding that more assets/data does not fix).
+
+No champion ranking changes. This round's primary value is methodological: an independent, cross-platform negative result corroborated with more statistical rigor than either source alone produced, and a disciplined "no" on porting a strategy that isn't actually promising just because new data made it easy to try.
