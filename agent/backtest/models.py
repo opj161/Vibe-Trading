@@ -23,6 +23,10 @@ class Position:
         leverage: Effective leverage (1 for spot/stocks).
         entry_bar_idx: Index in the dates array at entry (for holding_bars).
         entry_commission: Commission paid at entry.
+        resize_applied: Whether the opt-in one-shot quantity resize
+            (``config["one_shot_resize"]``, see
+            ``BaseEngine._maybe_one_shot_resize``) has already fired for this
+            position. Always ``False`` unless that feature is configured.
     """
 
     symbol: str
@@ -33,6 +37,7 @@ class Position:
     leverage: float = 1.0
     entry_bar_idx: int = 0
     entry_commission: float = 0.0
+    resize_applied: bool = False
 
 
 @dataclass(frozen=True)

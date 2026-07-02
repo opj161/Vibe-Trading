@@ -15,6 +15,7 @@ import re as _re
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -324,6 +325,12 @@ class BaseEngine(ABC):
         # signal engine's own target weight for that symbol varies while the
         # sign stays the same.
         self.rebalance_threshold: Optional[float] = config.get("rebalance_threshold")
+        # Opt-in one-shot, quantity-based resize (see _maybe_one_shot_resize
+        # docstring). Categorically different from rebalance_threshold: it
+        # reacts only to elapsed holding time, never to price/target-weight
+        # drift, and fires at most once per position lifetime. None/absent
+        # preserves entry-locked sizing exactly, same as rebalance_threshold.
+        self.one_shot_resize: Optional[Dict[str, Any]] = config.get("one_shot_resize")
 
     # ── Market rule interface (subclass must implement) ──
 
@@ -652,11 +659,14 @@ class BaseEngine(ABC):
                     self._close_position(symbol, price, ts, "signal")
                 else:
                     return  # blocked (e.g. limit-down can't sell)
-            elif self.rebalance_threshold is not None:
-                # Same direction, still open: optionally resize toward the
-                # new target weight instead of leaving size frozen at
-                # whatever it was on entry day (opt-in, see _maybe_resize).
-                self._maybe_resize(symbol, target_dir, target_weight, current_pos, bar, equity)
+            elif self.rebalance_threshold is not None or self.one_shot_resize is not None:
+                # Same direction, still open: optionally resize instead of
+                # leaving size frozen at whatever it was on entry day.
+                if self.one_shot_resize is not None:
+                    self._maybe_one_shot_resize(symbol, current_pos, bar)
+                    current_pos = self.positions.get(symbol, current_pos)
+                if self.rebalance_threshold is not None:
+                    self._maybe_resize(symbol, target_dir, target_weight, current_pos, bar, equity)
                 return
 
         # Open new if target non-zero and no remaining position
@@ -757,6 +767,79 @@ class BaseEngine(ABC):
             self._add_to_position(symbol, current_pos, new_size, slipped)
         else:
             self._reduce_position(symbol, current_pos, new_size, slipped)
+
+    def _maybe_one_shot_resize(
+        self,
+        symbol: str,
+        current_pos: Position,
+        bar: pd.Series,
+    ) -> None:
+        """One-shot, quantity-based position resize.
+
+        Once a position of the configured direction has been held for at
+        least ``trigger_bars``, multiply its *quantity* by a fixed
+        ``multiplier`` exactly once, then freeze again — categorically
+        different from ``_maybe_resize``'s continuous, price-implied-weight-
+        driven rebalancing. That mechanism reacts to price every bar (it
+        chases whatever the signal engine's target weight currently implies
+        given the position's now-mark-to-market notional) and was found
+        sharply harmful for this platform's crypto trend-following family
+        (see CLAUDE.md's "position sizing only applies at entry" section,
+        ZD1 in ``vibe_trading_research_findings.md`` §70.2): it lets a
+        vol-target formula trim a position exactly as a favorable trend's
+        own volatility rises. This primitive reacts only to elapsed holding
+        time, never to price, and fires at most once per position lifetime
+        (tracked via ``Position.resize_applied``), so it cannot reproduce
+        that failure mode.
+
+        Opt-in only (``config["one_shot_resize"]``), default ``None`` — unset
+        for every existing strategy/test, preserving entry-locked sizing
+        exactly. Config shape::
+
+            {"direction": "long" | "short" | "both",
+             "trigger_bars": 10,
+             "multiplier": 2.0}
+
+        Args:
+            symbol: Instrument identifier.
+            current_pos: The open position for *symbol*.
+            bar: Current bar data (OHLCV + extras).
+        """
+        if current_pos.resize_applied:
+            return
+        spec = self.one_shot_resize
+        direction_filter = spec.get("direction", "both")
+        if direction_filter == "long" and current_pos.direction != 1:
+            return
+        if direction_filter == "short" and current_pos.direction != -1:
+            return
+
+        trigger_bars = int(spec.get("trigger_bars", 10))
+        holding_bars = self._bar_idx - current_pos.entry_bar_idx
+        if holding_bars < trigger_bars:
+            return
+
+        multiplier = float(spec.get("multiplier", 2.0))
+        open_price = float(bar.get("open", bar.get("close", 0)))
+        if open_price <= 0 or multiplier == 1.0:
+            self.positions[symbol] = replace(current_pos, resize_applied=True)
+            return
+        if not self.can_execute(symbol, current_pos.direction, bar):
+            return
+
+        slipped = self.apply_slippage(open_price, current_pos.direction)
+        new_size = current_pos.size * multiplier
+        if multiplier > 1.0:
+            self._add_to_position(symbol, current_pos, new_size, slipped)
+        else:
+            self._reduce_position(symbol, current_pos, new_size, slipped)
+
+        # Mark fired regardless of whether the add/reduce fully executed
+        # (e.g. a capital-constrained partial add) -- it's a one-shot
+        # trigger, not a target to keep chasing every subsequent bar.
+        updated = self.positions.get(symbol)
+        if updated is not None:
+            self.positions[symbol] = replace(updated, resize_applied=True)
 
     def _add_to_position(
         self,

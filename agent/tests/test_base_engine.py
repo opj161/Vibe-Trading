@@ -388,3 +388,122 @@ class TestRebalanceThresholdResize:
         assert new_pos.direction == -1
         assert new_pos.entry_price == pytest.approx(120.0)
         assert new_pos.entry_time == pd.Timestamp("2025-01-10")
+
+
+# ---------------------------------------------------------------------------
+# one_shot_resize: opt-in, one-shot, quantity-based position resize
+# ---------------------------------------------------------------------------
+
+
+class TestOneShotResizeDefault:
+    """one_shot_resize absent/None must preserve the original entry-locked-
+    sizing behavior exactly."""
+
+    def test_default_none(self) -> None:
+        assert _make_crypto_engine().one_shot_resize is None
+
+    def test_same_direction_is_noop_by_default(self) -> None:
+        engine = _make_crypto_engine()  # no one_shot_resize
+        pos = Position("BTC-USDT", 1, 100.0, pd.Timestamp("2025-01-02"), 400.0, leverage=1.0, entry_bar_idx=0)
+        engine.positions["BTC-USDT"] = pos
+        engine.capital = 59_960.0
+        engine._bar_idx = 20  # well past any plausible trigger_bars
+        engine._rebalance("BTC-USDT", 0.7, pd.DataFrame(
+            {"open": [120.0], "close": [120.0]}, index=[pd.Timestamp("2025-01-20")],
+        ), pd.Timestamp("2025-01-20"), 100_000.0)
+        new_pos = engine.positions["BTC-USDT"]
+        assert new_pos.size == pytest.approx(400.0)
+        assert new_pos is pos
+
+
+class TestOneShotResizeTrigger:
+    def test_before_trigger_bars_is_noop(self) -> None:
+        engine = _make_crypto_engine(one_shot_resize={"direction": "short", "trigger_bars": 10, "multiplier": 2.0})
+        pos = Position("SOL-USDT", -1, 100.0, pd.Timestamp("2025-01-02"), 400.0, leverage=1.0, entry_bar_idx=0)
+        engine.positions["SOL-USDT"] = pos
+        engine._bar_idx = 5  # < trigger_bars
+        engine._maybe_one_shot_resize("SOL-USDT", pos, _bar(100.0))
+        assert engine.positions["SOL-USDT"] is pos
+        assert pos.resize_applied is False
+
+    def test_direction_filter_excludes_long(self) -> None:
+        engine = _make_crypto_engine(one_shot_resize={"direction": "short", "trigger_bars": 10, "multiplier": 2.0})
+        pos = Position("BTC-USDT", 1, 100.0, pd.Timestamp("2025-01-02"), 400.0, leverage=1.0, entry_bar_idx=0)
+        engine.positions["BTC-USDT"] = pos
+        engine._bar_idx = 20
+        engine._maybe_one_shot_resize("BTC-USDT", pos, _bar(100.0))
+        assert engine.positions["BTC-USDT"] is pos  # untouched -- filter is short-only
+
+    def test_doubles_quantity_once_after_trigger(self) -> None:
+        engine = _make_crypto_engine(one_shot_resize={"direction": "short", "trigger_bars": 10, "multiplier": 2.0})
+        pos = Position("SOL-USDT", -1, 100.0, pd.Timestamp("2025-01-02"), 400.0, leverage=1.0, entry_bar_idx=0)
+        engine.positions["SOL-USDT"] = pos
+        engine.capital = 60_000.0
+        engine._bar_idx = 10  # exactly at trigger
+
+        engine._maybe_one_shot_resize("SOL-USDT", pos, _bar(100.0))
+
+        new_pos = engine.positions["SOL-USDT"]
+        assert new_pos.size == pytest.approx(800.0)  # quantity doubled
+        assert new_pos.resize_applied is True
+        assert new_pos.direction == -1
+        assert new_pos.entry_time == pos.entry_time  # holding period tracking preserved
+
+    def test_second_call_is_noop_one_shot_only(self) -> None:
+        """A second bar past the trigger must not resize again."""
+        engine = _make_crypto_engine(one_shot_resize={"direction": "short", "trigger_bars": 10, "multiplier": 2.0})
+        pos = Position("SOL-USDT", -1, 100.0, pd.Timestamp("2025-01-02"), 400.0, leverage=1.0, entry_bar_idx=0)
+        engine.positions["SOL-USDT"] = pos
+        engine.capital = 60_000.0
+        engine._bar_idx = 10
+        engine._maybe_one_shot_resize("SOL-USDT", pos, _bar(100.0))
+        resized_once = engine.positions["SOL-USDT"]
+        capital_after_first = engine.capital
+
+        engine._bar_idx = 11
+        engine._maybe_one_shot_resize("SOL-USDT", resized_once, _bar(101.0))
+
+        assert engine.positions["SOL-USDT"] is resized_once  # unchanged, second call is a no-op
+        assert engine.capital == pytest.approx(capital_after_first)
+
+    def test_price_move_does_not_affect_trigger_or_size(self) -> None:
+        """Distinguishing property vs. _maybe_resize: this primitive is
+        purely time-triggered and quantity-based -- it must not react to
+        price/weight drift the way rebalance_threshold does."""
+        engine = _make_crypto_engine(one_shot_resize={"direction": "long", "trigger_bars": 10, "multiplier": 1.5})
+        pos = Position("BTC-USDT", 1, 100.0, pd.Timestamp("2025-01-02"), 1000.0, leverage=1.0, entry_bar_idx=0)
+        engine.positions["BTC-USDT"] = pos
+        engine.capital = 500_000.0
+        engine._bar_idx = 10
+        # Large price move (100 -> 500) must not change the fixed 1.5x outcome.
+        engine._maybe_one_shot_resize("BTC-USDT", pos, _bar(500.0))
+        new_pos = engine.positions["BTC-USDT"]
+        assert new_pos.size == pytest.approx(1500.0)  # exactly 1.5x original quantity, regardless of price
+
+    def test_multiplier_below_one_reduces_quantity(self) -> None:
+        engine = _make_crypto_engine(one_shot_resize={"direction": "short", "trigger_bars": 10, "multiplier": 0.5})
+        pos = Position("SOL-USDT", -1, 100.0, pd.Timestamp("2025-01-02"), 400.0, leverage=1.0, entry_bar_idx=0)
+        engine.positions["SOL-USDT"] = pos
+        engine.capital = 60_000.0
+        engine._bar_idx = 10
+        engine._maybe_one_shot_resize("SOL-USDT", pos, _bar(100.0))
+        new_pos = engine.positions["SOL-USDT"]
+        assert new_pos.size == pytest.approx(200.0)
+        assert new_pos.resize_applied is True
+
+    def test_direction_flip_still_closes_not_resizes(self) -> None:
+        """one_shot_resize must not interfere with the existing
+        close-on-sign-change path."""
+        engine = _make_crypto_engine(one_shot_resize={"direction": "both", "trigger_bars": 10, "multiplier": 2.0})
+        engine.positions["BTC-USDT"] = Position(
+            "BTC-USDT", 1, 100.0, pd.Timestamp("2025-01-02"), 400.0, leverage=1.0, entry_bar_idx=0,
+        )
+        engine.capital = 59_960.0
+        engine._bar_idx = 20
+        df = pd.DataFrame({"open": [120.0], "close": [120.0]}, index=[pd.Timestamp("2025-01-22")])
+        engine._rebalance("BTC-USDT", -0.5, df, pd.Timestamp("2025-01-22"), 100_000.0)
+        assert len(engine.trades) == 1
+        assert engine.trades[0].exit_reason == "signal"
+        new_pos = engine.positions["BTC-USDT"]
+        assert new_pos.direction == -1
+        assert new_pos.resize_applied is False  # brand-new position, trigger hasn't fired
