@@ -2316,3 +2316,770 @@ Followed through on §69.3's flagged next step: extended the value+momentum comp
 ### 70.4 Net effect
 
 No champion ranking changes. The trade forensics (§70.1) meaningfully sharpens this platform's understanding of *why* Z4 wins and loses (the 15-day durability threshold is a genuinely new, precise, OOS-confirmed finding) without yet yielding a cleanly implementable improvement — the natural next idea it motivated (ZD1) hit a real platform-mechanics wall worth documenting for any future attempt. China A's value+momentum lead is now closed, properly, via the discipline that's supposed to catch exactly this failure mode. The forward-validation ledger (`forward_validation/`) remains the correct mechanism for generating genuinely new evidence on the standing champions from here.
+
+## 71. Round 56 (user-directed): auditing the raw run-card leaderboard for abandoned-but-promising strategies — the 15m SOXX/SOXL mean-reversion "winner" closed as a short-window statistical artifact
+
+Directive: methodically re-scan the codebase (`HANDOFF.md`, this log, `winning_strategy_technical_overview.md`, `vibe_all_run_metrics_ranking.csv`) for any highly-profitable strategy that was abandoned, or run before a relevant platform fix, and should be rerun. `vibe_trading_strategy_synthesis.md` and `vibe_trading_research_plan_2026H2.md` (both dated the same day, already read first) already provide an exhaustive, disciplined assessment of the *documented* research arc (§1-70) and conclude nearly every avenue is closed except two budget-gated items (VRP data purchase, `TUSHARE_TOKEN`). The genuinely open question this round targeted was different: the raw `annual_profit`/`annual_return` leaderboard (`vibe_all_run_metrics_ranking.csv`, `winning_strategy_technical_overview.md`) contains a top entry — `agent/runs/20260630_044631_81_90164a`, a 15-minute-bar RSI(14)+Bollinger(20,2) mean-reversion strategy trading a SOXL/SOXS/SOXX/SMH/QQQ/TQQQ/SQQQ basket, reporting an annualized 154.98%/yr, Sharpe 2.31 — that **appears nowhere in this findings log's 70 prior sections, nor in the synthesis, nor in the H2 plan.** It is a genuine orphan: an artifact of some earlier exploratory session/tool invocation never folded into the documented arc. A sibling, more rigorous but equally undocumented audit thread was also found at `agent/runs/20260630_143522_65_eb0647/audit_runs/` (tracks A-D: SOXL tactical, SOXS diagnostic, crypto cross-sectional, AI-hardware weekly rotation) — its own `audit_summary.csv` shows every track's strategy return trailing its own buy-and-hold benchmark (e.g. `trackA_1h_trend`: strategy +129% vs. SOXX buy-and-hold **+872%** over the same window), a self-contained negative result consistent with, and predating, this log's own §69.2 AISOXX1 closure. That thread does not need to be revisited — it already failed by its own explicitly pre-registered pass criteria.
+
+The 90164a run does need direct scrutiny: its own Monte Carlo validation (already computed, already in its run card) put p=0.452 on its Sharpe — statistically indistinguishable from a random reshuffle of the same 75 trades — and it covers only a 20-trading-day window (2026-06-01→2026-06-29), the shortest, least-trustworthy kind of sample this log has repeatedly warned against (cf. `v_Rung1_naivebh_train`'s 149%/yr train-window figure that collapsed to -40.8%/yr OOS). Rather than take the flagged concern on faith, it was re-tested directly.
+
+### 71.1 Method: extend the identical, unmodified signal to more data, both at native granularity and at a longer-history granularity
+
+`yfinance`'s real API limits were empirically probed first (per this log's own standing discipline of verifying data capability before trusting a number): 15-minute bars are available for ~60 calendar days back from today (2026-05-03→2026-07-02 resolves; 2026-05-01→2026-07-02, one day-pair further back, silently fails to resolve at all — a hard cliff, not a gradual truncation), while 1-hour bars are available for at least 2 years (2024-07-03→2026-07-02 resolves cleanly). Three run families were built, each reusing the *original, unmodified* `signal_engine_15m.py` code (byte-identical RSI/BB logic, byte-identical basket) — no parameter was retuned, consistent with this log's "verify, don't re-optimize" default for testing whether an existing result generalizes:
+
+- **SM1 (15m, unmodified code):** train on 2026-05-04→2026-06-05 (new data, never seen by the original discovery run), single-shot OOS on 2026-06-08→2026-07-02 (overlaps the original discovery window plus a few extra days) — the maximum real extension available at native granularity.
+- **SM2 (1H, unmodified code, `max_hold_bars=16` i.e. now a ~16-trading-hour/2.4-day hold instead of the original 4-hour hold):** train 2024-07-03→2025-12-31 (1.5 years), OOS 2026-01-01→2026-07-02 (6 months, includes the original discovery window).
+- **SM3 (1H, `max_hold_bars` rescaled to 4 to preserve the original ~4-hour holding-period *intent* across the interval change — the only code change made, and a mechanical rescaling, not a new signal idea):** same train/OOS windows as SM2.
+
+All six runs used explicit `"source": "yfinance"` (not `"auto"`, removing the original run's provider ambiguity) and the platform's full validation stack (Monte Carlo, bootstrap CI, walk-forward).
+
+### 71.2 Result: decisively negative across every extension, with the underlying statistical insignificance directly confirmed
+
+| Run | Window | Total return | Sharpe | vs. benchmark (excess) | Bootstrap 95% CI | Walk-forward consistency |
+|---|---|---:|---:|---:|---|---|
+| SM1 train | 2026-05-04→06-05 (new data) | **-9.4%** | **-2.63** | -13.1pp | [-9.41, 3.50] (straddles 0) | 1/4 windows |
+| SM1 OOS | 2026-06-08→07-02 | +2.2% | 0.96 | +1.4pp | [-6.31, 8.75] (straddles 0) | 3/3 |
+| SM2 train (1H, 1.5y) | 2024-07→2025-12 | +8.6% | 0.34 | +3.9pp | [-1.26, 1.92] (straddles 0) | 3/6 |
+| SM2 OOS (1H, 6mo) | 2026-01→2026-07 | **-11.5%** | **-0.48** | **-29.8pp** | [-3.27, 2.42] (straddles 0) | 2/4 |
+| SM3 train (1H, rescaled hold) | 2024-07→2025-12 | +6.9% | 0.33 | +2.1pp | [-1.49, 1.80] (straddles 0) | 3/6 |
+| SM3 OOS (1H, rescaled hold) | 2026-01→2026-07 | +3.1% | 0.41 | **-15.2pp** | [-2.98, 2.64] (straddles 0) | 2/4 |
+
+Every single one of the six bootstrap 95% confidence intervals straddles zero, and every one of the six Monte Carlo p-values on Sharpe is well above conventional significance (0.35-0.95) — the original run's insignificant p=0.452 was not a fluke of that one run, it is the honest signature of this entire signal family. On genuinely new data one month earlier than the original window (SM1 train), the strategy loses money outright and badly (Sharpe -2.63). At 1-hour granularity over real multi-year and 6-month windows — samples 15-50x larger than the original 20-day window — the strategy is at best marginally, insignificantly positive in absolute terms and **always loses decisively against simple buy-and-hold** (excess return -15 to -30 percentage points OOS, both hold-time variants). This is the same "strategy underperforms its own benchmark" pattern already seen in the undocumented eb0647 audit and the documented §69.2 AISOXX1 closure — now confirmed a third way, for a third distinct signal family (mean-reversion, vs. eb0647's trend/ORB and §69.2's TSMOM), on the same semiconductor-ETF universe.
+
+### 71.3 Net effect: the raw leaderboard's top entry is now closed with the same rigor as everything else in this log, and the answer is negative
+
+**No revival warranted.** The 90164a run's headline 155%/yr was a 20-day annualization artifact riding a favorable short window, not a real edge — exactly the failure mode `vibe_trading_strategy_synthesis.md` §2.1 already named in the abstract ("the top raw entries are... short-window annualization artifacts") and now confirmed concretely, for this specific run, with real out-of-sample data. Combined with the already-exhaustive `vibe_trading_strategy_synthesis.md`/`vibe_trading_research_plan_2026H2.md` review of the documented arc, this closes the last unaudited corner of the raw leaderboard: **there is no abandoned, pre-fix, or overlooked strategy in this codebase currently sitting on unrealized, statistically credible profit.** The two items with genuine remaining expected value — VRP monetization (P1.3) and China-A/US fundamental data (P2.2/TUSHARE_TOKEN) — both require a paid-subscription budget decision from the user, not further backtesting, and remain open exactly as the H2 plan already states. **Standing recommendation unchanged: Z4 (drawdown focus) / Z4+Z8 (return/Sharpe focus) for the crypto sleeve, CP3/CPA3 for a blended crypto+macro composite.** New run artifacts: `agent/runs/v_SM1_soxx_meanrev_15m_{train,oos}`, `v_SM2_soxx_meanrev_1h_{train,oos}`, `v_SM3_soxx_meanrev_1h_scaled_{train,oos}` (all gitignored, per platform convention).
+
+## 72. Round 57 (user-directed): P1.3 VRP monetization executed with a genuine full-history Deribit trade tape — the real-data unblock, and a disciplined no-go on the naive strategy
+
+The user supplied a self-fetched 757MB Parquet file of the **complete real Deribit BTC option trade history** (23,845,156 trades, 2016-11-29 → 2026-07-02, 89,745 distinct instruments; built with the open-source `deribit-historical-data` fetcher against Deribit's official trade-history API — every trade, not a sample) — a materially better unblock for P1.3 than the H2 plan's assumed path (a paid CryptoDataDownload OHLC-by-strike subscription starting Sept 2022). Every trade row carries real transacted `price`, Deribit's own `mark_price`, per-trade `iv`, the `index_price` at execution, `amount`, and `direction` — genuinely enough to build and net-of-cost-backtest a real strategy, not just describe a premium.
+
+**Housekeeping:** moved to `data/parquet/btc_option_trades_deribit.parquet` (the root `.gitignore` already had a dedicated, previously-empty `data/parquet/` pattern reserved for exactly this kind of large binary market-data file — confirmed gitignored, not committed). New reusable analysis code lives in `research/vrp_deribit/` (`data_prep.py`, `phase1_vrp_validation.py`, `phase2_short_straddle_backtest.py`), with small derived CSVs in `research/vrp_deribit/derived/` (~1.5MB total, safe to commit, unlike the raw 757MB source).
+
+### 72.1 Data validation
+
+Instrument names parsed 100% cleanly (0/89,745 unparsed) into (expiry, strike, C/P) via Deribit's standard `BTC-{D}{MMM}{YY}-{STRIKE}-{C|P}` format. Trade-count-by-year grows smoothly with Deribit's own known history (99 trades in 2016 → 5.3M in 2025), and monthly counts from 2023 on show no suspicious gaps. `iv` has zero nulls (0.36% exactly-zero, illiquid-quote artifacts); `mark_price` has 0.12% nulls — both negligible. A genuine, expected market-structure feature, not a data defect: the 20-40-DTE "near 30-day" window is intermittently *empty* for stretches of a few days to (in the earliest, monthly-only-listing years) several weeks, because Deribit's listing calendar doesn't always keep an expiry inside that exact band — 901 of 3,393 calendar days (mostly 2017-2020) have no qualifying trade; any strategy selecting "the ~30-day expiry" needs an explicit nearest-available fallback, not a strict band (built into phase 2, below).
+
+### 72.2 Phase 1 — does the real tape corroborate §56's DVOL-based VRP finding?
+
+Built two compact derived series purely from the tape (`data_prep.py`): a daily BTC index-price series (from the option tape's own `index_price` field — the same index Deribit itself settles against, avoiding a separate spot-source alignment question) and a volume-weighted **ATM 30-day IV** series (trades with 20-40 DTE, |log-moneyness| < 7.5%).
+
+**Cross-validation against the existing free DVOL series** (`research/data/dvol_btc.csv`, 2021-03→present): correlation **0.985** over the 1,577-day overlap — strong confirmation the parsing/aggregation is sound — with a consistent **-4.5 vol-point** bias (ours running lower), attributable to methodology (a simple ATM-band volume-weighted average vs. DVOL's full-strip variance-swap-replication formula), not an error.
+
+**VRP = ATM-30d IV − forward-30-day realized vol**, computed two ways:
+
+| Method | Window | n | mean VRP (vol-pts) | t-stat | p-value |
+|---|---|---:|---:|---:|---:|
+| Overlapping daily (naive) | 2017-02→2026-06 | 2,492 | 3.56 | 7.41 | 1.8e-13 |
+| **Non-overlapping (every 30th obs.)** | 2017-02→2026-06 | 84 | 2.06 | 0.72 | **0.47** |
+| Non-overlapping | ex-2020 (drops COVID) | 75 | 4.04 | 1.84 | 0.070 |
+| Non-overlapping | 2021+ (matches DVOL/§56 window) | 55 | 4.16 | 1.75 | 0.086 |
+| Non-overlapping | 2023+ (recent/liquid era) | 35 | 3.22 | 1.48 | 0.148 |
+| Non-overlapping | 2017-2020 only (pre-DVOL, untested before) | 29 | -6.52 | -0.93 | 0.362 |
+
+**This meaningfully tempers, without reversing, §56's claim.** The overlapping-daily test *looks* overwhelming (t=7.41) but this is the same overlapping-observations trap already named in `CLAUDE.md`'s `compute_group_equity` gotcha (consecutive daily VRP readings share 29 of their 30 underlying days, drastically inflating the apparent t-stat). The properly non-overlapping test — the only one that is actually statistically valid — is **not significant at conventional levels in any sub-period tested** (best case p=0.07 for 2021+/ex-2020), though the *direction* stays positive in every era except the small, COVID-dominated 2017-2020 slice. §56's originally reported "t-stat 28.3" was almost certainly computed on DVOL directly with a variance-swap-payoff formula (not this log's ATM-IV-minus-RV vol-point difference) over a shorter, cleaner post-2021 sample — not reproduced or contradicted here, just shown to be far more fragile than its headline number suggested once tested with a longer, genuinely independent non-overlapping design.
+
+**A materially worse tail-risk data point than previously documented**: the 10 worst VRP days are *all* in the COVID crash (2020-02-23 → 2020-03-07), bottoming at **-160 vol-points** (implied 49-57 vs. realized ~204-209) — nearly 3x worse than the previously-cited May-2021 -52.8 vol-point episode, only visible because this tape's real history reaches back to 2017 (DVOL only starts 2021-03). Any position-sizing decision for this strategy family must be stress-tested against a COVID-scale event, not just May 2021.
+
+### 72.3 Phase 2 — an actual, cost-aware, real-data-executed short-straddle backtest
+
+Built the tradeable strategy the H2 plan actually called for (`phase2_short_straddle_backtest.py`): monthly-rebalanced short ATM straddle, **real traded entry premiums** (not modeled — the actual observed `price` on the nearest real trade to each strike/expiry/date), **daily Black-Scholes mark-to-model** using a trade-derived implied-vol term structure (interpolated across 5 DTE buckets built in `data_prep.py`, avoiding the sparse-single-contract-marking problem), real Deribit fees (0.03%/side, capped at 12.5% of premium) plus an **empirically-measured half-spread haircut** (median |price − mark_price| / mark_price on ATM 30d trades = 0.61%, used directly rather than assumed). No engine capability on this platform can represent genuine implied vol (`options_portfolio.py`'s "IV" is defined as trailing realized vol, per `CLAUDE.md`) — this is necessarily a standalone script, not a `runner.py` backtest, flagged explicitly per this log's own "hand-rolled ≠ real engine" caution; the mitigating difference from the three prior documented failures of that pattern (§42.3, §45.2, §50.3) is that those approximated an *existing* engine capability, whereas here no engine capability exists to approximate at all.
+
+**First result: naked, unhedged 30%-of-capital margin sizing is not survivable.** Max drawdown -82% to -113% (equity range implies the position would have been liquidated or gone deeply negative-equivalent long before reaching that point) — direct, quantified confirmation that raw short volatility carries real, occasionally catastrophic tail risk, not just a margin inconvenience. Re-run at more conservative sizing for interpretable metrics:
+
+| Margin utilization | Unconditional Sharpe / ann. return / max DD | IV-conditional Sharpe / ann. return / max DD |
+|---:|---|---|
+| 5% | 0.01 / -0.2% / -15.2% | 0.56 / +1.2% / -7.5% |
+| 10% | 0.05 / -0.4% / -29.8% | 0.59 / +2.3% / -14.0% |
+| 15% | 0.10 / -0.6% / -43.7% | 0.62 / +3.4% / -19.7% |
+| 20% | 0.16 / -0.8% / -57.0% | 0.65 / +4.4% / -24.9% |
+
+**Unconditional harvesting is flat-to-negative net of real costs at every tested size** — directly corroborating phase 1's marginal/insignificant non-overlapping VRP finding with an actual executed-P&L simulation, a second, independent methodology reaching the same conclusion. **IV-conditional (only sell when trailing ATM-30d IV is above its own trailing 2-year median — a live-safe, lookahead-free gate) is more promising on its face** (Sharpe 0.56-0.65 across sizes) but on only 25 non-independent monthly trades over 6.5 years — a thin sample, the same "small-N" character that has already burned this log twice this arc (§57, §70.3).
+
+**Decisive finding: both variants are severely offset-sensitive, the same rebalance-timing-luck signature this platform has already learned to distrust.** Shifting only the day-of-month the monthly position is opened (all else identical):
+
+| Anchor offset | Unconditional Sharpe (util=10%) | IV-conditional Sharpe (util=10%) |
+|---:|---:|---:|
+| +0d | 0.05 | 0.59 |
+| +5d | -0.07 | 0.83 |
+| +10d | 0.47 | **3.64** |
+| +15d | 0.31 | 1.82 |
+| +20d | 0.03 | 0.21 |
+| +25d | 0.06 | -0.39 |
+
+The unconditional variant's Sharpe swings from -0.07 to +0.47 — modest in absolute terms but a >10x relative range on an already-marginal number. The **IV-conditional variant swings from -0.39 to +3.64** — the +10d reading alone would look like a spectacular result in isolation, and is obviously a selection artifact of exactly which handful of months the trailing-median gate happens to admit at that particular anchor, not a real effect (matching §15's EMA-signal finding almost exactly: single-offset numbers on this kind of monthly/rebalance-timing design cannot be trusted at all without a sweep).
+
+The real trade log behaves exactly as short volatility should: clean, small wins in calm/range-bound months, and severe losses precisely during genuine trending rallies (Oct 2021 pre-ATH: -$54k against $39k premium collected; Nov 2024 post-election rally: **-$97k against $39k premium**, the single worst trade in the log) — an expected, not surprising, characteristic of an unhedged short-gamma position, not a bug in the simulation.
+
+### 72.4 Net effect: real go on the data, disciplined no-go on the naive strategy, clear scope for a real follow-on
+
+**The data itself is an unambiguous win** — it fully unblocks P1.3 as planned (both the VRP-existence validation and the actual net-of-cost tradeable backtest the H2 plan called for), goes deeper (2016 vs. Sept-2022) and is of higher fidelity (real trade prints + per-trade IV/mark vs. OHLC-by-strike) than the originally-budgeted paid alternative, and cost nothing this session. **The strategy result is a genuine, disciplined negative-to-marginal finding, not a data-quality problem**: the underlying VRP is real in direction (confirmed by two independent methods — IV-minus-RV differencing and actual executed straddle P&L) but (a) far weaker statistically than the previously-reported headline once tested with a properly non-overlapping design over a longer history, (b) does not clear the H2 plan's own Sharpe ≥~1.0 promotion bar at any tested position size in its naive (naked, hold-to-expiry, no delta-hedge) form, and (c) is severely sensitive to an arbitrary rebalance-day choice in exactly the way this platform has already learned to distrust in every other strategy family. This is the **seventh** instance in this arc's log of a real, statistically genuine signal failing to convert into a monetizable overlay/strategy (joining §52/§53/§60/§64.5/§69.1's five prior cases plus cross-sectional crypto momentum) — strengthening, not weakening, the standing "Z4/this platform's edges are close to a local optimum for naive overlay/strategy construction" meta-finding.
+
+**P1.3 is closed in its currently-scoped (naive monthly naked straddle) form: do not promote to the composite.** A clearly scoped, larger follow-on remains genuinely open if this thread is picked up again: a **delta-hedged** implementation (dynamically hedging directional exposure with BTC futures/perps to isolate the volatility/gamma premium, the professional-standard way to harvest VRP, rather than accepting full naked directional tail risk) or a **defined-risk structure** (e.g. an iron condor/butterfly with long wings capping the COVID-scale tail found in §72.2) could plausibly rescue the real-but-small edge found here — but that is a materially larger engineering task (continuous re-hedging logic, futures financing costs, a proper margin/liquidation model) not attempted this session, and per this log's own standing discipline should not be assumed to work before it is actually built and tested.
+
+## 73. Round 58 (user-directed): §72 audited — two methodology defects found and quantified — then the open delta-hedged follow-on actually built and run
+
+This round did what the standing discipline demands after any headline investigation: audited §72's
+code (`research/vrp_deribit/phase1_vrp_validation.py`, `phase2_short_straddle_backtest.py`) before
+trusting it, then executed the follow-on §72.4 explicitly left open (the delta-hedged
+implementation), with the audit's corrections folded in. New code:
+`research/vrp_deribit/phase3_delta_hedged_backtest.py`; new derived artifacts:
+`derived/phase3_equity_*.csv`, `derived/phase3_trades_*.csv`.
+
+### 73.1 Audit of §72: phase 1 clean; phase 2 had two real defects, both flattering
+
+**Phase 1 (VRP measurement) verified correct.** The forward-realized-vol construction was checked
+for off-by-one lookahead (at date t the window is (t, t+30] — correct, excludes t's own return);
+the overlapping-vs-non-overlapping distinction driving §72.2's headline tempering is exactly
+right and matches the platform's own documented overlapping-returns trap. No changes.
+
+**Phase 2 defect 1 — entry-selection lookahead.** `find_straddle_entry` searched trades in
+`anchor ± 3 days` (backward *and* forward), stamped the entry at the anchor date even when the
+selected print occurred days later, and chose the strike against the *last* index print in the
+window (future information at selection time). Mild in P&L terms but structurally a lookahead.
+
+**Phase 2 defect 2 — flat-day-excluded Sharpe, quantified.** The equity series only contained
+days with an open position; `compute_metrics` annualized with √365 anyway. Irrelevant for the
+unconditional variant (86% calendar coverage) but the IV-conditional variant is in-market only
+30% of days: its reported Sharpe 0.59 falls to **0.32** when the equity curve is reindexed to the
+full calendar (idle days = zero P&L, which is what the capital actually earns on this platform's
+own zero-cash-yield convention). Both defects inflate the reported result, so **§72's no-go
+verdict survives the audit strengthened** — the true naive result is somewhat worse than written.
+
+### 73.2 Phase 3, pre-registered: delta-hedged short straddle with corrected mechanics
+
+Identical universe/entries/fees/haircut to phase 2 except: (a) forward-only entry window
+`[anchor, anchor+3d]`, strike chosen against the *first* index print at/after anchor, marking
+starts at the actual entry-trade date; (b) full-calendar Sharpe/DSR everywhere; (c) a daily BS
+delta hedge (same trade-derived term-structure sigma as the marks) executed with a linear BTC
+position at perp taker 0.05% on notional traded plus the platform-standard 0.0001/8h signed
+funding; (d) hedged and unhedged run side-by-side under the identical corrected mechanics so the
+hedge effect is isolated. Pre-registered grid: 2 variants × {hedged, unhedged} (DSR n_trials=4),
+util {10% headline, 20/30% sensitivity}, offset sweep {0,5,10,15,20,25}d. Promotion bar unchanged
+(net Sharpe ≳1.0, survivable tail). 2020-01 → 2026-06, 78 unconditional / 25 conditional entries.
+
+### 73.3 Results: hedging fixes the tail exactly as intended; it does not create a Sharpe-1 strategy
+
+| Variant (util=10%, full-calendar) | ann. return | Sharpe | max DD | DSR |
+|---|---:|---:|---:|---:|
+| Unhedged, unconditional | -4.7% | -0.21 | **-40.0%** | 29.7% |
+| Unhedged, IV-conditional | +1.2% | 0.17 | -18.8% | 66.2% |
+| **Hedged, unconditional** | -0.8% | -0.12 | **-9.6%** | 37.6% |
+| **Hedged, IV-conditional** | +0.8% | 0.31 | **-5.0%** | 77.4% |
+
+- **Risk transformation is decisive and validates the §72.4 hypothesis mechanically**: max DD
+  -40.0% → -9.6% (unconditional) at identical sizing; the COVID March-2020 entry — the tape's
+  worst episode, -160 vol-points realized — loses a contained -$71k against $39k premium instead
+  of being unsurvivable; even 30% margin utilization stays at -13.7% DD (vs. -82% to -113%,
+  liquidation-equivalent, for the naked version in §72.3).
+- **Return does not follow**: the hedge's running costs (taker fees + funding on the hedge leg)
+  consume the small unconditional premium entirely (Sharpe -0.12); the IV-conditional variant is
+  genuinely positive but small — Sharpe 0.31-0.34 across all three utilizations, nowhere near the
+  ≥1.0 promotion bar, on only 25 trades.
+- **Offset sweep (hedged, util=10%)**: UNCOND -0.15…+1.16 (mean 0.40, 2/6 negative); COND
+  +0.03…+1.46 (**mean 0.78, 6/6 positive** — the first sign-stable offset sweep any VRP variant
+  has produced on this platform, vs. phase 2's -0.39…+3.64). Honest point estimate for the
+  hedged-conditional strategy is therefore the offset mean ≈0.7-0.8, not any single anchor.
+- **Diversification check**: daily-return correlation of the hedged-conditional stream to Z4 is
+  **-0.035** over 1,702 overlapping days of the extended window (+0.03 over the OOS year) —
+  genuinely near-zero against the champion, as a variance-premium return driver should be.
+
+### 73.4 Disposition: not promotable, not dead — forward-track it
+
+Edge 3's final shape after three investigation phases: **real premium, real diversification,
+survivable tail once hedged, but too small after real costs to clear the promotion bar, on too
+few independent trades (25) to trust the conditional gate's magnitude.** This is *not* an eighth
+clean instance of the real-signal-fails-to-monetize pattern — it is the first that monetizes
+weakly-but-survivably under honest accounting. Per the P0.2 ritual, the correct disposition is
+calendar time, not more variants: re-run `phase3_delta_hedged_backtest.py` quarterly as the tape
+accrues (the fetcher is open-source and free), append results, and reconsider promotion only if
+the offset-mean Sharpe holds ≥~0.7 on materially more trades. The lower-prior variations (25-delta
+wings, weeklies, threshold/intraday hedging, defined-risk condor) stay closed absent a specific
+new motivation — the 7-for-7 overlay-failure prior plus this round's cost anatomy (hedge friction
+already eats half the gross premium) argue any added structure must pay for itself first.
+
+## 74. Round 59 (user-directed): raw run-data forensics for genuinely new directions — four found, all quantified
+
+Per an explicit "break the loop of re-suggesting the same next steps" directive, this round went
+back to the raw artifacts (`trades.csv`/`positions.csv`/`configs` across the champion lineage,
+plus a fresh fetch of real Binance perp funding history) and named four patterns never explicitly
+identified in §1-73. Full evidence and pre-registered test designs in
+**`vibe_trading_forensics_new_directions.md`** (root). Headlines: (1) ERC hands BTC 60-75% of
+gross capital for ≤12.5% of P&L (negative in the forward year) — the §50.2 anti-pattern living
+inside the champion itself; (2) the perp-wrapper preference rests on a wrong-signed static
+funding model — real 2025-26 rates turn the modeled +2.5%/+5.1% funding *credit* into a real
+-1.8%/-2.0% *cost*, concentrated in SOL shorts; (3) §70.1's durability finding is
+direction-specific — 73% of forward short trades die <8 days and that bucket is the strategy's
+dominant cost center, motivating a quantity-based one-shot resize primitive with asymmetric
+sizing; (4) the "broad universes lose" closure was learned entirely on bull-window data while
+the current profit engine (86-100% of forward P&L) is short alt downtrends — re-examined via a
+zero-snooping freeze-and-forward-track variant, not a backtest. New data artifact:
+`research/data/binance_funding_fwd_window.csv`.
+
+## 75. Round 60 (user-directed): executing §74's four directions — Direction 2 (real-funding re-attribution) resolved with a per-side deployment decision
+
+Executed in the doc's own suggested order, starting with Direction 2 (pure analysis, no
+burned-window/backtest-selection risk, changes live-deployment economics immediately).
+
+### 75.1 Method
+
+Two new scripts: `research/fetch_binance_funding_history.py` (extends
+`research/data/binance_funding_fwd_window.csv` from the forward-window-only fetch §74 made to
+full history — BTCUSDT from 2019-09-10, SOLUSDT from 2020-09-13, both through 2026-07-02, 7,461
+and 6,428 real settlements respectively) and `research/direction2_funding_attribution.py`, which
+re-attributes `fwd_Z8_20260702`/`fwd_ZA4_20260702`'s actual realized daily positions
+(`positions.csv` weight × same-day `equity.csv` equity = notional) against real Binance
+settlement rates at the true 3x/day cadence ({00,08,16} UTC), using the exact same fee formula as
+`_market_hooks.py::calc_crypto_funding_fee` (`notional × rate × direction`, positive = paid by
+the strategy) — entirely post-hoc, no engine change, no re-backtest. This is an independent,
+more granular recomputation of §74's original ad hoc figures (which this section's numbers
+supersede as the authoritative version — the two don't match exactly, most likely because §74's
+were a quicker single-pass estimate, but the qualitative finding, direction, and rough magnitude
+are the same).
+
+### 75.2 Full-history real funding context: BTC's positive carry is structural; SOL's is not
+
+| Symbol | n settlements | Span | Mean annualized | % settlements negative | By year (ann. %) |
+|---|---:|---|---:|---:|---|
+| BTCUSDT | 7,461 | 2019-09→2026-07 | **+11.72%** | 14.6% | 2019:+7.5 2020:+17.2 2021:+30.6 2022:+4.2 2023:+7.9 2024:+11.9 2025:+5.1 2026:+1.2 |
+| SOLUSDT | 6,428 | 2020-09→2026-07 | +0.08% | 28.6% | 2020:-12.5 2021:+28.6 **2022:-35.6** 2023:+1.3 2024:+13.6 2025:+0.4 2026:-3.3 |
+
+BTC funding has been net-positive in **every calendar year on record**, never close to flipping
+sign at an annual level — a genuinely structural, not regime-dependent, positive-carry-for-shorts
+/ cost-for-longs asymmetry. SOL funding has **no stable sign at all**: +28.6%/yr in 2021,
+-35.6%/yr in 2022, near-zero in 2023/2025, negative again in the 2026 partial year. The engine's
+static model (fixed +0.0001/settlement, i.e. ~+11%/yr if applied 3x/day) happens to be a
+reasonable long-run approximation for BTC and a poor one for SOL in every year except 2021/2024.
+
+### 75.3 Forward-run re-attribution: the sign-flip is real, and it is entirely a SOL-short problem
+
+| Run | Static (engine assumption) | **Real (actual Binance rates)** |
+|---|---:|---:|
+| `fwd_Z8_20260702` | +$10,897 (+1.09%) | **-$8,401 (-0.84%)** |
+| `fwd_ZA4_20260702` | +$21,836 (+2.18%) | **-$10,264 (-1.03%)** |
+
+Per (symbol, side) — the grain an actual wrapper decision needs:
+
+| Symbol / side | Z8 static | Z8 real | ZA4 static | ZA4 real |
+|---|---:|---:|---:|---:|
+| BTC LONG | -8,571 | -2,641 | -8,295 | -3,269 |
+| BTC SHORT | +14,512 | **+4,059** | +21,494 | **+5,614** |
+| SOL LONG | -5,152 | -2,617 | -5,573 | -2,991 |
+| SOL SHORT | +10,108 | **-7,203** | +14,211 | **-9,619** |
+
+**BTC keeps its sign on both sides** — shorts still net-collect funding in reality (smaller than
+modeled, since 2025-26's realized BTC funding ran well below the static model's ~11%/yr, but
+never flips negative). **SOL short is the only cell that flips sign**, and it is the single
+largest swing in the table (+$10.1k modeled profit → -$7.2k real cost for Z8; +$14.2k → -$9.6k
+for ZA4) — a $15-24k round-trip miss concentrated exactly on the strategy's own dominant profit
+engine (SOL shorts are 86-100% of forward-year P&L per §74 Direction 4's evidence). This
+confirms §74's finding with more precision and localizes it completely: **the wrapper-economics
+problem is SOL-short-specific, not a general funding-model miscalibration.**
+
+### 75.4 Decision (deployment-scope, not a backtest re-selection — no frozen strategy changes)
+
+1. **BTC: perp remains the correct wrapper, either side.** 7 full years of real settlement data
+   show funding has never gone net-negative in a calendar year; perps' lower fee schedule
+   (§64.6 ZB3: ~0.02%/0.05% vs spot's ~0.08%/0.10%) is a clean, uncontested win with no funding
+   downside risk borne out by the data.
+2. **SOL: do not assume perp funding is a short-side tailwind.** The static model's assumption
+   (shorts collect ~11%/yr) is wrong often enough (3 of 6 full years negative, including a
+   -35.6%/yr year) that any capital-allocation or leverage decision building on "shorts get paid
+   to hold" should be re-derived from real trailing SOL funding, not the engine default.
+3. **Recommended live wrapper for SOL shorts specifically: funding-sign-conditional**, not a
+   blanket switch to spot-margin (spot-short borrow costs, researched at ~1-3%/yr per CLAUDE.md,
+   are not free either, and are not currently modeled in this platform to allow a rigorous
+   cost comparison). Concretely: hold SOL shorts on perps whenever trailing realized SOL funding
+   is non-negative (the common case — 71.4% of settlements historically), and treat sustained
+   negative-funding stretches (visible in real time, no lookahead) as a signal to prefer a
+   spot-margin short wrapper instead. This is an execution-venue choice, not a signal-logic
+   change, so it requires no new frozen variant and carries no data-snooping cost.
+4. **Research-tracking implication**: any future backtest or forward-projection of this
+   strategy family's SOL-short economics should use a realistic near-zero (not +11%/yr) funding
+   assumption for SOL — the existing `funding_rate: 0.0` setting already used in the live
+   `forward_validation/frozen/` configs is, in hindsight, closer to reality for SOL than the
+   engine's own documented default, though it also (correctly, coincidentally) zeroes out BTC's
+   genuine positive short-side carry, which real deployment should still capture.
+
+New artifacts: `research/fetch_binance_funding_history.py`,
+`research/direction2_funding_attribution.py`, extended
+`research/data/binance_funding_fwd_window.csv` (full history, 2019-09→2026-07-02).
+
+## 76. Round 60 continued: Direction 1 (BTC capital-misallocation grid) — pre-registered, clean negative result, control wins
+
+### 76.1 Method
+
+Pre-registered 3-variant grid exactly as specified in §74 Direction 1, extended train window
+2020-11-01→2025-06-30 only (2025-26 stays burned), standard costs (`maker 0.0008/taker 0.001`,
+`funding_rate: 0.0`), DSR with `n_trials=3`:
+
+1. **Control** — `forward_validation/frozen/ZA4` run as-is (`v_ZA4_regimeconviction_ext_train`,
+   byte-identical config/code verified via `diff`, no rerun needed).
+2. **SOL-only** (`v_ZE2_solonly_ext_train`) — byte-identical ZA4 code, `codes: ["SOL-USDT"]` only.
+   Confirmed algebraically that `_erc_weights` degenerates to identity at n=1, so no code change
+   was needed for this variant — the universe change alone is the entire treatment.
+3. **BTC-capped** (`v_ZE3_btccapped_ext_train`) — byte-identical ZA4 code plus one addition: BTC's
+   final post-allocation weight is capped at 30% of that day's two-asset gross exposure
+   (`|BTC weight| + |SOL weight|`), freed budget added to SOL same-sign, total gross preserved.
+   Verified the cap fired as intended: mean BTC share of active-day gross exposure **70.4%
+   (control) → 34.2% (capped)** — confirms the forensics doc's cited 60-75% figure independently,
+   and confirms the redistribution mechanism works (residual above 30% is entirely single-asset
+   days where BTC is active and SOL is flat, uncappable by construction).
+
+### 76.2 Results
+
+| Variant | Total return | Sharpe | Max DD | Calmar | DSR (n_trials=3) |
+|---|---:|---:|---:|---:|---:|
+| **Control (ZA4)** | +3,866% | **1.560** | **-43.5%** | 2.758 | **0.9996** |
+| SOL-only | **+7,730%** | 1.440 | -83.5% | 1.851 | 0.9992 |
+| BTC-capped | +5,184% | 1.521 | -68.3% | 1.964 | 0.9996 |
+
+### 76.3 Interpretation: the misallocation is real and quantified, but diversification pays for itself
+
+Both treatment variants **confirm Direction 1's core premise directly** — pulling capital out of
+BTC and into SOL substantially raises terminal return (SOL-only +100% relative to control,
+BTC-capped +34%), corroborating the forensics doc's claim that BTC's ERC-driven capital share
+vastly exceeds its P&L contribution. But **neither variant beats control on the pre-registered
+DSR bar**, and both are unambiguously worse on the risk axis that actually matters for a capital
+allocator: Sharpe is lower for both (1.560 → 1.521 / 1.440), and **max drawdown is dramatically
+worse** (-43.5% → -68.3% / -83.5%) — a near-doubling of tail risk for SOL-only. This is exactly
+the "known risk to watch" the pre-registration flagged before running anything: 2-asset ERC
+diversification genuinely dampens drawdown even though it dilutes raw return, and the dampening
+is worth more (on a Sharpe/DSR basis) than the diluted return it costs. DSR itself does not
+discriminate cleanly here (all three saturate at 0.999+ against a n_trials=3, ~4.5-year daily
+null — expected, since the deflation term is small relative to how far all three Sharpes sit
+above zero), so the decision rests on the pre-registration's own stated tie-breakers (Sharpe,
+drawdown), both of which control wins clearly.
+
+### 76.4 Disposition: no promotion — this is a genuine, informative negative result
+
+Per the pre-registration ("winner, if any, goes into `frozen/`"): **neither variant is promoted.**
+Control (ZA4) remains the champion for this axis. This is not a wasted test — it is the first
+time this specific, previously-only-qualitative "BTC is overallocated" observation has been
+directly quantified against its true opportunity cost (return foregone) *and* its true benefit
+(drawdown avoided), and the benefit wins. It also closes a specific version of the idea cleanly:
+a flat 30%-cap or full single-asset concentration are not the right shape of fix. A more adaptive
+allocator (e.g. a return-aware or regime-conditional cap, rather than a flat constant) remains a
+theoretically open follow-on, but per this arc's own standing discipline (§ various), it should
+not be assumed to work before it is actually pre-registered and tested — no such follow-on is
+proposed here without a concrete new mechanism.
+
+## 77. Round 60 continued: Direction 4 (broadened-universe freeze-and-forward-track) — ZA4B added, zero backtest cost
+
+### 77.1 What was done
+
+Per §74 Direction 4's explicit design (freeze-and-track, deliberately no backtest on the burned
+2020-2025-06 window at all, since every prior "broad universes lose" rejection in this log
+was learned entirely on bull-dominated data that never exercised the current profit engine's
+actual regime — short alt downtrends): added `forward_validation/frozen/ZA4B/` — ZA4's
+`signal_engine.py` copied **byte-for-byte** (verified via `diff`, zero modification; the ERC +
+chop + regime-dampener stack was already universe-agnostic, so no code change was needed to
+extend it to 4 assets) with `config.json`'s `codes` broadened to `["BTC-USDT", "SOL-USDT",
+"ETH-USDT", "AVAX-USDT"]` — the four deepest-history OKX pairs already verified in CLAUDE.md.
+No parameters were retuned; this is a pure universe-space change, run through the exact same
+allocation/chop/regime machinery already validated for ZA4's 2-asset book.
+
+### 77.2 Functional verification (not a design backtest)
+
+`forward_validation/run_forward.py --only ZA4B` was run once to confirm the freeze is
+mechanically correct and wired into the quarterly ritual — this uses the ritual's own
+warmup+true-forward window (2025-06-01 onward), not the burned 2020-2025-06 design window, so it
+carries no selection risk; it is the same category of action as running the ritual for any other
+already-frozen strategy. Result: ran cleanly (`engine_sha256` matches ZA4's exactly, confirming
+byte-identical code), produced a normal equity curve through 2026-06-30, and appended its first
+(currently empty — 0 true-window bars, `nan` metrics) row to `results.csv`, identical in shape to
+every other champion's same-day entry (the true forward window has only just opened; this is
+expected, not a defect). One ephemeral run directory, `agent/runs/fwd_ZA4B_20260702/`, was
+created by this smoke-test exactly as the ritual creates one for every other frozen strategy.
+
+### 77.3 Disposition
+
+ZA4B now sits alongside Z4/Z8/ZA4/M1/CP3 in `forward_validation/frozen/` and `README.md`'s table,
+arbitrated by the same quarterly ritual and the same non-negotiable rules (never re-tune against
+the ledger, never edit `frozen/`). No conclusion is drawn yet — none is possible with 0 true-window
+bars — this section exists purely to record that the freeze happened, when, and why, so a future
+session reading the ledger has the provenance without re-deriving it.
+
+## 78. Round 60 continued: Direction 3 — the missing engine primitive built, tested, and used for ZD2, a properly-implemented successor to the failed ZD1
+
+### 78.1 The engine primitive: `config["one_shot_resize"]`
+
+ZD1 (§70.2) hit a genuine platform-mechanics wall: `rebalance_threshold` is a continuous,
+*price-implied-weight-driven* resize mechanism (it compares a position's mark-to-market implied
+weight, `size × price / equity`, against a target every bar), so using it for a one-time "step up
+after surviving N days" design silently reintroduced §43's continuous-rebalance failure as an
+unavoidable side effect. Direction 3 called for the actually-missing primitive: a **one-shot,
+quantity-based resize** that reacts only to elapsed holding time and fires at most once per
+position.
+
+Implemented in `agent/backtest/engines/base.py`:
+
+- `Position` (`agent/backtest/models.py`) gained one new field, `resize_applied: bool = False` —
+  tracks whether the one-shot trigger has already fired for this specific position instance.
+  Default preserves every existing dataclass construction call site unmodified.
+- `BaseEngine.__init__` reads `config.get("one_shot_resize")` (opt-in, `None` default, same
+  pattern as `rebalance_threshold`).
+- `BaseEngine._maybe_one_shot_resize(symbol, current_pos, bar)`: once `self._bar_idx -
+  current_pos.entry_bar_idx >= trigger_bars` (and the position's direction matches the configured
+  `"long"`/`"short"`/`"both"` filter, and the trigger hasn't already fired for this position),
+  multiplies the position's *quantity* by a fixed `multiplier` exactly once via the existing
+  `_add_to_position`/`_reduce_position` machinery (correct capital/margin/commission accounting,
+  same code path `rebalance_threshold` already uses), then marks `resize_applied=True` so it never
+  fires again for that position's lifetime — regardless of subsequent price movement. Config shape:
+  `{"direction": "long"|"short"|"both", "trigger_bars": int, "multiplier": float}`.
+- Wired into `_rebalance()`'s existing same-direction-still-open branch, alongside (and
+  independent of) `rebalance_threshold` — either, both, or neither can be active; both default to
+  `None`/off, so every existing strategy and test is provably unaffected (confirmed: full 4,679-
+  test suite passes unchanged after this addition).
+
+11 new tests in `agent/tests/test_base_engine.py` (`TestOneShotResizeDefault`,
+`TestOneShotResizeTrigger`): default-off behavior, before-trigger no-op, direction filtering,
+exact-doubling at the trigger bar, one-shot-only (a second bar past the trigger does nothing),
+the defining property that a large price move does **not** affect the trigger or resulting size
+(the whole point, contrasted directly against `rebalance_threshold`'s price-reactive design),
+multiplier < 1.0 (reduction) support, and non-interference with the existing direction-flip-closes
+path.
+
+### 78.2 ZD2: shorts enter at half size, one-shot-double after surviving 10 days
+
+Built directly on §70.1's direction-specific whipsaw finding, sharpened in §74/this round's
+forensics doc: 73% of forward-year short trades died inside 8 days, giving back more than half
+the short side's gross winnings, vs. roughly a third as frequent for longs. `v_ZD2_durability_
+ext_train`: byte-identical ZA4 stack plus one final-step addition — short-signed weights are
+scaled by 0.5 (entry-locked sizing means only this final value on the entry day ever reaches
+execution, so this is exactly "shorts enter at half size"); `config["one_shot_resize] =
+{"direction": "short", "trigger_bars": 10, "multiplier": 2.0}` handles the "double after 10 days"
+half of the design via the new primitive. Same extended window (2020-11→2025-06), same standard
+costs, one control (ZA4 as frozen).
+
+| Variant | Total return | Sharpe | Max DD | Calmar | Trade count | DSR (n_trials=2) |
+|---|---:|---:|---:|---:|---:|---:|
+| Control (ZA4) | **+3,866%** | 1.5598 | **-43.5%** | **2.758** | 168 | 0.9997 |
+| ZD2 | +3,607% | **1.5648** | -47.0% | 2.489 | 183 | **0.9998** |
+
+**A razor-thin, mixed result — ZD2 technically edges control on the pre-registration's stated
+primary criterion (DSR: 0.9998 vs 0.9997, driven by a +0.005 raw Sharpe edge), but is worse on
+every other axis** (return, drawdown, Calmar). The Sharpe/DSR gap is well within single-backtest
+noise (0.3% relative) and should not be read as a real edge on its own; the drawdown/Calmar gap
+(-43.5%→-47.0%, 2.758→2.489) points the other way. Verified the direction-timing itself is
+unaffected by the treatment (0 sign-differing cells across the full 1,703-day × 2-symbol aligned
+position matrix between the two runs) — the 15 extra trades (168→183) trace entirely to a real,
+expected capital-friction side effect: doubling a short's quantity via `_add_to_position` ties up
+additional margin, which occasionally leaves insufficient free capital for another symbol's
+concurrent entry that control's un-doubled version had room for, splitting what would be one
+continuous hold into a closed-then-reopened pair a few bars later during a few specific clustered
+episodes (2021-06 SOL, 2022-02/03 BTC, 2024-09 BTC, 2025-04 BTC) — a genuine, realistic
+consequence of a capital-constrained two-asset book, not a bug.
+
+### 78.3 Disposition: frozen for forward-tracking, not promoted as a confident win
+
+Per the pre-registration's own framing ("freeze and forward-track if it survives" — a lower bar
+than Direction 1's "beats control decisively"), and because the backtest evidence is genuinely
+ambiguous (wins on the stated primary axis by a margin indistinguishable from noise, loses on two
+secondary axes), the correct disposition is exactly what `forward_validation/` exists for:
+**added `forward_validation/frozen/ZD2/`** (byte-identical to `v_ZD2_durability_ext_train`,
+verified via `diff`) alongside the existing five champions plus ZA4B, smoke-tested once through
+the real ritual (`run_forward.py --only ZD2`, ran cleanly, `0` true-window bars as expected this
+early). This is explicitly **not** a promotion or a claimed champion-quality result — it is frozen
+because the backtest evidence could not resolve it either way, and only real forward data can.
+
+### 78.4 Net effect of Direction 3
+
+The primary deliverable is the **engine primitive itself** — the first genuinely new capability
+this session added to the platform proper (`agent/backtest/engines/base.py`,
+`agent/backtest/models.py`), fully tested, off by default, available for any future one-shot
+sizing idea without re-deriving the ZD1 mistake. ZD2 is a real, honestly-reported first use of it:
+neither a clean win nor a clean loss, correctly deferred to the forward-validation ledger rather
+than either promoted on thin evidence or discarded on thin evidence.
+
+## 79. Round 61 (user-directed): full audit of Round 60's four executions — one real bug found and fixed (reversing §76's headline), one structural handicap fixed in the ZA4B freeze, one magnitude correction to §75, and a burned-window consistency layer added to §78
+
+Audit-then-fix pass over §75-78's implementations, per the standing "verify against the actual
+code before trusting any framing" discipline. Everything below was verified against the code and
+rerun where wrong; the full 4,679-test suite and the 40 base-engine tests (including the 11 new
+`one_shot_resize` tests) pass.
+
+### 79.1 Direction 2 (§75) — method sound, one alignment defect; magnitudes roughly halve, conclusion survives
+
+`direction2_funding_attribution.py` books each position day's funding at that same calendar
+day's {00,08,16} UTC settlements — but an OKX daily position is established at the 16:00 bar
+close and held into the *next* day's settlements, so two of three booked settlements predate the
+position. Funding spikes cluster around exactly the big-move days positions flip, so the 1-day
+misalignment is not benign: recomputed with correct held-window alignment (settlements at
+d+1 00/08/16 for a day-d position), real funding P&L is **-$3.4k (Z8) / -$4.3k (ZA4)** — not
+§75.3's -$8.4k/-$10.3k — with the SOL-short cell at **-$2.6k/-$4.2k** (not -$7.2k/-$9.6k).
+Every §75 sign and the per-side wrapper decision (§75.4) survive unchanged: BTC keeps positive
+short carry, SOL-short still flips from modeled-profit to real-cost, and the static model still
+misses by $15-28k per run-year. But the *urgency* is lower than §75 implied: the true SOL-short
+funding drag is ~0.3-0.4%/yr of capital, comparable to (not dominating) the perp-vs-spot fee
+advantage. §75.2's full-history context tables and §75.4's recommendations are unaffected (they
+don't depend on the alignment). These corrected figures supersede both §74's quick pass and §75.3.
+
+### 79.2 Direction 1 (§76) — a real implementation bug in ZE3; the fixed rerun REVERSES the ext-window verdict, and a new burned-window check reverses it back for the current regime
+
+**The bug**: ZE3's cap redistribution (`v_ZE3_btccapped_ext_train/code/signal_engine.py`)
+computed `over_cap` without requiring SOL to be active. On BTC-solo days (SOL flat — 155 of
+1,703 ext-window days, mean BTC weight 0.866), BTC share of gross is 100% > 30%, so the cap
+fired, slashed BTC to 0.3× its own weight, and handed the freed budget to SOL via
+`np.sign(0) = 0` — silently *destroying* ~0.6 of gross exposure on 9% of all days, directly
+contradicting both the code's own comment ("a day with only one asset active is untouched") and
+§76.1's description. §76's "clean negative result" was substantially an artifact of this.
+
+**Fixed rerun** (`v_ZE3b_btccapped_fixed_ext_train`, cap gated on `sol_abs > 1e-12`, honest
+trial count now 4 for this family): ext-window total return **+6,864% vs control's +3,866%,
+Sharpe 1.601 vs 1.560, Calmar 3.15 vs 2.76**, max DD -47.1% vs -43.5% — the BTC-capped variant
+*wins* the pre-registration's stated tie-breakers on the design window.
+
+**But a burned-window consistency check** (`v_ZE3b_btccapped_fixed_OOS_TEST`, 2025-05→2026-06,
+informational only, window burned) **fails decisively**: Sharpe 0.663 vs ZA4's 0.934, return
+24.8% vs 41.4%, DD -29.1% vs -27.4%. Mechanism, from the trade data: pushing freed BTC budget
+into SOL amplifies *whatever regime SOL is in* — in the 2021/2023-24 SOL bulls that compounds
+the profit engine (hence the ext-window win); in the 2025-26 bear it amplifies SOL-long
+counter-regime losses and SOL-short whipsaw churn while discarding BTC's positive short
+contribution. **Disposition: not promoted, not frozen.** The §74 premise (BTC's capital share
+vastly exceeds its P&L share) remains true and confirmed, but a *static* reallocation
+monetizes it only in SOL-friendly regimes — the honest generalization of §76, replacing its
+buggy "diversification always wins" conclusion with "a fixed cap is a regime bet". A
+regime-*conditional* reallocation remains the theoretically open follow-on, per §76.4, still
+not assumed to work.
+
+### 79.3 Direction 3 (§78) — primitive verified sound; ZD2's evaluation window was mismatched to its motivation; the burned-window check now added, and it wins on every axis
+
+`_maybe_one_shot_resize` audited line-by-line: quantity-based, fires at most once per position
+(`resize_applied` via immutable `replace`), direction-filtered, retries only when execution is
+blocked, marks applied even on capital-constrained partial adds, off by default, correctly
+ordered before `rebalance_threshold` in `_rebalance`. ZD2's `SHORT_ENTRY_SCALE = 0.5` is applied
+as the genuine final step (verified it does NOT repeat the §63.2 dead-tilt mistake). No code
+changes needed.
+
+**The evaluation gap**: §78 judged ZD2 only on the 2020-2025 ext window — bull-dominated, where
+shorts are a minor P&L contributor, i.e. minimal power to detect a short-side fix. Added the
+standard burned-window consistency check (`v_ZD2_durability_OOS_TEST`, 2025-05→2026-06,
+informational): **ZD2 beats ZA4 on every axis in the regime it was designed for** — return
+44.5% vs 41.4%, Sharpe 1.040 vs 0.934, max DD -23.0% vs -27.4%, Calmar 1.61 vs 1.26. Combined
+with the ext-window near-tie, the evidence is now consistent with the design intent (halving
+short whipsaw losses costs little in bull regimes and pays in bear regimes). ZD2 stays frozen
+for forward arbitration — this check upgrades its outlook, not its status.
+
+### 79.4 Direction 4 (§77) — freeze amended before any forward bar accrued: byte-identical code carried a 2-asset-calibrated constant into a 4-asset book
+
+`GROSS_RECOVERY_SCALE = 2.0` is the 2-asset calibration of the structural ~1/n gross cap
+(§63.4). Frozen byte-identical over 4 assets, ZA4B's smoke test realized only **0.441 mean
+gross vs ZA4's 0.724** — a structural half-deployment that would have confounded the
+universe-breadth arbitration the freeze exists for (any ZA4B underperformance would be
+deployment artifact, not universe evidence). Amended `forward_validation/frozen/ZA4B/
+signal_engine.py` to `GROSS_RECOVERY_SCALE = float(len(symbols))` (reduces exactly to 2.0 for
+ZA4's own 2-asset case, so it generalizes rather than re-tunes); re-smoke-tested: mean gross
+**0.723**, matching ZA4's 0.724 to the third decimal. Amendment made 2026-07-02 with **zero
+true-forward bars accrued** (ledger shows 0-bar rows only), so it carries no selection cost;
+the ledger's engine-sha column records the change (37cb…→09e4…) exactly as designed.
+
+### 79.5 Net state after the audit
+
+| Item | Status after audit |
+|---|---|
+| Funding wrapper decision (§75.4) | Stands, with magnitudes halved (79.1) |
+| BTC-cap reallocation | Closed as a static variant (regime bet, 79.2); regime-conditional version remains open |
+| ZD2 (short durability) | Frozen; outlook upgraded by the every-axis bear-window win (79.3) |
+| ZA4B (broad universe) | Frozen, deployment-corrected (79.4); arbitration now clean |
+| `one_shot_resize` primitive | Verified correct; 4,679-test suite green |
+
+## 80. Round 62 (user-directed): the combination question answered empirically — treatments do not stack; ZD2 is the family's best form on all available evidence
+
+The natural question after §79 ("can the validated insights be combined into one final, maximally
+profitable strategy?") was answered with a pre-registered 3-variant combination grid rather than
+by assumption. Design, declared before running: **ZC1** = both-sides durability (all entries at
+half size, one-shot ×2 at 10 days — extending ZD2's treatment to the long side, motivated by the
+ext-window LONG <8d bucket being the family's single biggest loss bucket: 47 trades, 0% win rate,
+-$17.5M, and 0-14% win on BOTH sides in every window); **ZC2** = ZD2 + SOL-regime-conditional BTC
+cap (the §79.2 follow-on: cap BTC at 30% of gross only when SOL > its own SMA200 and SOL is
+active); **ZC3** = both combined. Decision rule (pre-declared): ext-window Sharpe primary,
+Calmar/DD tie-break, candidate must also not lose the burned-window consistency check. Controls:
+ZA4 and ZD2, existing runs, byte-identical bases.
+
+### 80.1 Results
+
+Extended window (2020-11→2025-06, design window):
+
+| Variant | Return | Sharpe | Max DD | Calmar |
+|---|---:|---:|---:|---:|
+| ZA4 (control) | +3,866% | 1.560 | -43.5% | 2.76 |
+| **ZD2** | +3,607% | **1.565** | -47.0% | 2.49 |
+| ZC1 (both-sides durability) | +1,764% | 1.487 | **-40.7%** | 2.14 |
+| ZC2 (ZD2 + conditional cap) | +3,402% | 1.522 | -54.7% | 2.09 |
+| ZC3 (everything) | +1,531% | 1.367 | -55.5% | 1.48 |
+
+Burned bear-window consistency check (2025-05→2026-06, informational):
+
+| Variant | Return | Sharpe | Max DD | Calmar |
+|---|---:|---:|---:|---:|
+| ZA4 | 41.4% | 0.934 | -27.4% | 1.26 |
+| **ZD2** | **44.5%** | **1.040** | -23.0% | **1.61** |
+| ZC1 | 39.2% | 1.008 | -21.8% | 1.50 |
+| ZC2 | 41.3% | 1.002 | -23.0% | 1.50 |
+| ZC3 | 36.2% | 0.965 | -21.8% | 1.39 |
+
+### 80.2 Why the combinations fail — three specific mechanisms, all legible in the trade data
+
+1. **The durability asymmetry is genuinely short-side-only.** Halving *long* entries forfeits the
+   front-loaded early-trend gains that are the family's entire profit engine (LONG >30d bucket:
+   +$57.2M, 100% win) — the day-10 quantity double buys back in at a worse price after the most
+   explosive leg. The whipsaw savings (-$17.5M bucket halved ≈ +$8.7M) cannot pay for that. The
+   long side's 0%-win <8d bucket is real but is the *unavoidable option premium* paid for
+   catching every big rally early — exactly §25.4's "the whipsaw is the edge's cost" lesson,
+   now quantified at the sizing (not just entry-timing) level. Shorts differ because bear-market
+   rallies squeeze fast and crypto crashes are *not* front-loaded the same way: cutting early
+   short size saves churn without missing the meat of the down-leg.
+2. **Even the regime-conditional BTC cap fails** (ZC2: DD blows out to -54.7%): SMA200 is slow,
+   so "SOL in bull regime" still amplifies SOL through deep within-regime corrections
+   (May-2021-style) — the cap's drawdown cost survives the conditioning. The §74 misallocation
+   premise stays true as a *description*; no tested reallocation (static §79.2 or conditional
+   here) monetizes it. Closed.
+3. **Interactions compound negatively** (ZC3 worst everywhere) — each mechanism's cost lands on
+   the other's remaining profit.
+
+### 80.3 Disposition and the answer to the combination question
+
+**No promotion; grid closed. ZD2 — ZA4 + short-only half-entry/one-shot-double — is the family's
+best form on every line of available evidence** (ext-window Sharpe, bear-window everything), and
+it is already frozen for forward arbitration. The "final, optimized, maximally profitable
+strategy" is not a stack of every validated insight — it is the champion stack plus exactly one
+treatment, applied to exactly the side whose loss anatomy motivated it. This extends the arc's
+central meta-finding one level up: not only is the champion near a local optimum for overlays,
+**it is near a local optimum for combinations of individually-promising allocation treatments**.
+Additions from here must clear an interaction-cost bar, not just an isolated-effect bar. The
+expected-value ranking is unchanged: forward validation (ZD2 vs ZA4 is the live question),
+deployment economics (§75.4/§79.1), TUSHARE_TOKEN.
+
+## 81. Round 63 (user-directed "zoom out"): the never-explored third axis — instrument expression — tested on the real options tape; first expression-space win, concentrated exactly where the anatomy predicted
+
+### 81.1 The zoom-out reasoning
+
+Every round since §63 has optimized two axes: the signal (closed, 0-for-11+) and the allocation
+(§80 closed the combination space). The trade-level anatomy assembled across §70/§74/§79/§80 —
+~100%-losing <8d whipsaws on both sides, 92-100%-winning >30d trends, profits front-loaded in
+explosive rallies, 56% give-back, short-side funding drag and squeeze churn — is, item for item,
+the return profile of a *long option* (the Fung & Hsieh 2001 result: trend-following replicates
+a lookback straddle). The champion pays its option premium in the worst possible form: unbounded
+linear whipsaw, funding on shorts, and no way to pyramid winners (ZC1 proved discrete adds fail;
+an option's gamma pyramids continuously at locally fair prices). Meanwhile §72's phase 1 measured
+the BTC VRP on the owned tape as *thin* (2-4 vol pts, p=0.07-0.15) — options are near-fairly
+priced, so paying theta to restructure the premium is not a priori losing. The third axis —
+**what instrument expresses the validated signal** — had never been tested (spot-vs-perp, §64.6,
+found zero effect; options never). We own the unique dataset to test it.
+
+### 81.2 Design (pre-registered; `research/vrp_deribit/phase4_trend_expression_options.py`, `phase4b_hybrid_and_stress.py`)
+
+The champion's REAL executed BTC direction stream (v_ZA4 ext train spliced with fwd_ZA4 at
+2025-07-01; 110 runs, 2020-11→2026-07, median hold 9-10.5d, 43% <8d), expressed three ways over
+identical dates and sizing (500k entry notional on a 1M base): SPOT (frozen-quantity,
+engine-faithful, 0.10% taker), OPT-DELTA (real ATM 20-40DTE call/put entry prints from the tape,
+delta-matched contracts, surface-marked, rolled at expiry, 0.61% empirical half-spread against us
+both ways, Deribit fees), OPT-BUDGET (same instruments, premium = 10% of notional — bounded-loss
+mode). Phase 4b: mechanism-implied hybrids (H1 spot-long+budget-put-short; H2 delta-call-long+
+budget-put-short; H3 spot-long+delta-put-short) and a 2x-spread stress.
+
+### 81.3 Results
+
+| Track | Total P&L | Ann. | Sharpe | MaxDD | 2x-spread Sharpe |
+|---|---:|---:|---:|---:|---:|
+| SPOT (baseline) | +$1.24M | 15.5% | 0.91 | -18.3% | — |
+| OPT-DELTA | +$1.83M (+47%) | 20.4% | 0.84 | -29.1% | 0.82 |
+| OPT-BUDGET | +$1.62M (+31%) | 18.7% | 0.91 | -21.9% | 0.88 |
+| **H1: spot longs + puts for shorts** | **+$1.56M (+26%)** | **18.2%** | **1.00** | **-21.0%** | **0.98** |
+| H2: calls + puts | +$1.89M (+52%) | 20.8% | 0.89 | -29.1% | 0.87 |
+
+Duration-bucket decomposition (the pre-registered core claim, per-run sums): options cut the
+<8d whipsaw bucket (-$866k spot → -$593k budget), pay for it in the 8-30d theta zone (-$418k →
+-$776k), and capture **+$0.9M more in the >30d winners** (+$2.53M → +$3.45M delta-matched) —
+gamma auto-pyramiding doing what ZC1's discrete day-10 add could not. Direction split: **shorts
+improve 5-6x** (+$66k spot → +$325k delta / +$386k budget) — puts bound squeeze losses, carry no
+funding (§75/§79.1's SOL-short drag has no put equivalent), and gain gamma into crashes. Longs
+improve on capture (+$1.18M → +$1.51M) but pay theta in chop.
+
+### 81.4 Honest caveats
+
+Hand-rolled (no engine capability exists — same §72.3 justification); exits are surface-marked
+model prices with an empirical-median spread haircut (deep-ITM exits trade wider — hence the 2x
+stress, which the result survives); BTC only (no SOL option tape on hand — and SOL is where the
+short-side prize actually lives); H1's exact +0.09 Sharpe edge came from a 6-combo comparison
+seeded by phase 4's own decomposition, so treat the point estimate as provisional — the
+load-bearing finding is the direction-level asymmetry (shorts-as-puts, 5-6x, stress-robust),
+which was the pre-registered hypothesis, not a post-hoc cell.
+
+### 81.5 Disposition and unblocks
+
+**First positive expression-space result on the platform: the champion's weakest leg (BTC)
+produces 26-52% more P&L from the identical signal when its shorts are expressed as puts.**
+Not promotable to the frozen ledger (runner.py cannot execute options) — forward-track by
+re-running phase 4 quarterly alongside phase 3 as the tape accrues. Two concrete unblocks with
+stated value: (1) **fetch the Deribit SOL option trade tape** with the same open-source fetcher
+that produced the BTC tape — SOL shorts are 86-100% of recent forward P&L and the squeeze-churn/
+funding problems the puts solve are 3x worse there; phase 4 reruns on it unchanged; (2) for live
+deployment, this study plus §75.4 jointly upgrade the short-side wrapper recommendation:
+**BTC shorts → perps (positive carry) or puts (bounded risk); SOL shorts → puts become the
+default candidate the moment SOL option liquidity checks out** (verify Deribit SOL option
+spreads/depth before acting — BTC's 0.61% median half-spread will not transfer automatically).
+
+## 82. Round 64 (user-directed): the SOL option tape acquired and the expression study rerun on the leg that matters — §81's hybrid confirmed out-of-family, with a larger effect
+
+### 82.1 Data acquisition (the §81.5 unblock, executed)
+
+Deribit indexes modern SOL options under `currency=USDC` (linear, March 2024+), not
+`currency=SOL` (which holds only the delisted Apr-Dec-2022 inverse products) — verified live
+against both the history and live APIs. Added an `INSTRUMENT_PREFIX` env filter to the
+`deribit-historical-data` fetcher (config.py + the single `get_instruments` choke point in
+client.py; filtered pulls land in their own `data/<prefix>/` directory so they never mix with a
+full-currency pull; 2 new tests, 35 pass). Fetch: 192,802 USDC option instruments filtered →
+49,112 SOL_USDC; 48,541 fetched in 42 minutes (resumable SQLite progress verified working after
+an interrupted first start); `gen_parquet.py` → **665,251 real SOL option trades, 2024-03-11 →
+2026-07-02, 0 unparsed instruments, 0 iv/index nulls**, now at
+`data/parquet/sol_usdc_option_trades_deribit.parquet` (24MB, gitignored). Known gap: the history
+API returns nothing for still-active options, so the most recent weeks of potential entries are
+absent until those expire.
+
+### 82.2 Phase 5 (`research/vrp_deribit/phase5_sol_expression.py`) — conventions and design
+
+SOL_USDC options are LINEAR: `price` is USDC per 1 SOL of underlying (premium_usd = price ×
+sol_units, no index multiplication — a different convention from the BTC inverse tape), contract
+size 10 SOL, instrument format `SOL_USDC-{D}{MMM}{YY}-{STRIKE}-{C|P}`. The empirical half-spread
+was re-measured on this tape: **1.31% (n=32,638)** — 2.1x BTC's 0.61%, as expected for a thinner
+book (median 37 ATM-band trades/day). Design otherwise identical to §81: the champion's real
+executed SOL direction stream (v_ZA4 spliced with fwd_ZA4; 53 runs in-window, 20 long/33 short),
+three expression tracks, per-direction hybrids, duration buckets, 2x-spread stress.
+
+### 82.3 Results — the same hybrid wins on a second, independent tape, with a bigger effect
+
+| Track | Total P&L | Ann. | Sharpe | MaxDD | at 2x spread (2.62%) |
+|---|---:|---:|---:|---:|---:|
+| SPOT (baseline) | +$209k | 9.0% | 0.37 | -35.7% | — |
+| OPT-DELTA | +$50k | 2.3% | 0.30 | -35.8% | -$12k (theta+spread kill it) |
+| OPT-BUDGET | +$159k | 7.2% | 0.42 | -22.1% | +$121k / 0.36 |
+| **H1: spot longs + budget puts shorts** | **+$262k (+25%)** | **11.7%** | **0.54 (+46%)** | **-21.7%** | **+$238k / 0.51** |
+
+**H1 — the exact hybrid §81 found on BTC — wins again, out-of-family**, and on SOL the
+improvement comes through the risk axis: max drawdown -35.7% → -21.7% (14 points) on top of
++25% P&L. This is the closest available thing to an out-of-sample confirmation of the §81
+selection: the hybrid was chosen on BTC evidence and prospectively confirmed on a tape that did
+not exist locally when it was chosen.
+
+**The like-for-like decomposition is stronger than the headline.** 14 of 53 runs found no option
+entry within 3 days (26% skip rate — the thin-book cost). Integrity check: the 8 skipped short
+runs were spot *winners* (+$149k) that the puts leg forfeited by staying flat — so the hybrid
+beat spot *despite* a $149k handicap, not because of selective coverage. On the 20 matched short
+runs: **spot -$119k vs budget puts +$83k — a $202k swing on identical trades.** Duration
+buckets: puts cut the <8d whipsaw bucket -$419k → -$242k (-42%); the >30d capture holds. Delta-
+matched sizing, which was fine on BTC, collapses on SOL (1.31% spread + theta at 60-160 IV) —
+premium-budget sizing is the only viable option mode on this book.
+
+### 82.4 Disposition
+
+The expression-space finding is now confirmed on both tapes with the same mechanism and the same
+winning hybrid: **express the champion's shorts as ~10%-of-notional put positions; keep longs
+linear.** Live implications (joint with §75.4/§79.1): SOL shorts via puts kill three birds —
+whipsaw churn (the §79.3 dominant cost center), funding drag, and squeeze/liquidation risk — at
+a measured, stress-robust cost. Forward-track by re-running phase 5 quarterly alongside phases
+3-4 (the fetcher resume makes tape refresh a single command:
+`CURRENCY=USDC INSTRUMENT_PREFIX=SOL_USDC python -m deribit_fetcher.option`). Engine-level
+options execution remains the build decision it was in §81.5 — now backed by two independent
+expression studies instead of one.

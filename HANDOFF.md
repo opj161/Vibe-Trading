@@ -4,6 +4,56 @@
 **Written:** 2026-07-01, end of a long single session. Superseded by later updates below — read to the bottom.
 **Repo state:** branch `fix-channel-settings`. Platform code fixes (loader race, artifacts-dir ordering, commission-key fix, optimizer lookahead+respect_magnitude, validation annualization, OKX history-candles fallback, the §43 mid-hold resize capability, the §44 risk_parity ERC solver fix, the §50 bars_per_year composite-validation fix, the §62 digit-leading-crypto-ticker misclassification fix) and the research docs are committed as of the end of this session — see `git log` for the exact commit boundaries; run artifacts under `agent/runs/v_*` are gitignored by design and stay local-only.
 
+## Latest update (2026-07-02): `vibe_trading_forensics_new_directions.md`'s four directions executed in full — §75-78
+
+A separate raw-run-data forensics pass (§74, done just before this update) named four genuinely new
+directions never covered by §1-73; this session executed all four, in the doc's own suggested order
+(2, 1, 4, 3 — pure analysis first, then increasing backtest/engineering cost), each documented in
+`vibe_trading_research_findings.md`:
+
+1. **§75 — Direction 2, real Binance funding-rate re-attribution: resolved, changes live deployment
+   economics.** Extended `research/data/binance_funding_fwd_window.csv` to full history (BTCUSDT
+   2019-09→, SOLUSDT 2020-09→) via new `research/fetch_binance_funding_history.py`, then re-attributed
+   `fwd_Z8_20260702`/`fwd_ZA4_20260702`'s actual positions against real settlement rates
+   (`research/direction2_funding_attribution.py`, post-hoc, no engine change). Confirmed and localized
+   §74's finding precisely: BTC funding keeps its modeled sign on both sides across all 7 years of
+   history (perps remain the right wrapper); **SOL-short is the only cell that flips sign** (modeled
+   +$10-14k profit → real -$7-10k cost, on the strategy's own dominant profit engine) — a
+   funding-sign-conditional wrapper recommendation for SOL shorts specifically, not a blanket spot
+   switch. No frozen-strategy changes; this is a deployment-scope decision.
+2. **§76 — Direction 1, BTC capital-misallocation 3-variant grid: pre-registered, clean negative
+   result.** SOL-only and BTC-capped-at-30%-of-gross variants (`v_ZE2_solonly_ext_train`,
+   `v_ZE3_btccapped_ext_train`) both confirmed the underlying premise (BTC's ERC share vastly exceeds
+   its P&L share — verified 70.4%→34.2% via the cap) and raised terminal return substantially, but
+   **both lost to control on Sharpe, drawdown, and Calmar** — 2-asset diversification's drawdown
+   protection is worth more than the return it dilutes. Neither variant promoted; ZA4 remains
+   champion for this axis.
+3. **§77 — Direction 4, broadened-universe freeze-and-forward-track: zero backtest cost.** Added
+   `forward_validation/frozen/ZA4B/` — ZA4's signal engine copied byte-for-byte (already
+   universe-agnostic, confirmed via `diff`) over `BTC+SOL+ETH+AVAX`, deliberately not backtested on
+   the burned 2020-2025 window (every prior "broad universes lose" rejection was learned entirely on
+   bull-window data that never exercised the current short-alt-downtrend profit engine). Smoke-tested
+   once via the real forward-validation ritual; arbitrated by the ledger from here.
+4. **§78 — Direction 3, the missing engine primitive + ZD2.** Built `config["one_shot_resize"]`
+   (`agent/backtest/engines/base.py` + one new `Position.resize_applied` field in
+   `agent/backtest/models.py`) — a genuinely new, tested, off-by-default engine capability: a
+   one-shot, quantity-based position resize triggered purely by elapsed holding time, categorically
+   different from `rebalance_threshold`'s continuous price-implied-weight chasing (the mechanism that
+   sank ZD1, §70.2). 11 new tests, full 4,679-test suite passes with zero regressions. Used it to
+   build ZD2 (`v_ZD2_durability_ext_train`: shorts enter at half size, one-shot-double after
+   surviving 10 days) — result is a genuinely ambiguous, mixed backtest (marginally better Sharpe/DSR,
+   worse drawdown/Calmar than control), so it was frozen for forward-tracking
+   (`forward_validation/frozen/ZD2/`) rather than promoted or discarded on thin evidence.
+
+**New platform capability this update**: the `one_shot_resize` engine primitive (§78) — the first
+genuinely new capability added to `agent/backtest/engines/base.py` since the §43 `rebalance_threshold`
+work. **Seven strategies now in `forward_validation/frozen/`**: Z4, Z8, ZA4, ZA4B, ZD2, M1, CP3.
+**New research scripts**: `research/fetch_binance_funding_history.py`,
+`research/direction2_funding_attribution.py`. Uncommitted at the time of this update — see `git
+status` for the live picture; touches `agent/backtest/engines/base.py`, `agent/backtest/models.py`,
+`agent/tests/test_base_engine.py`, several new `agent/runs/v_*`/`agent/runs/fwd_*` directories, and
+`forward_validation/frozen/{ZA4B,ZD2}/`.
+
 ## Latest update (2026-07-01, same-day continuation #4): closed the DVOL-backtest open item, then a genuine real-engine cross-sectional-momentum test found a fourth platform bug — §61-62
 
 Continued past §56-60 (documented below) using own judgment on what's most valuable next, rather than a fresh brainstorm:

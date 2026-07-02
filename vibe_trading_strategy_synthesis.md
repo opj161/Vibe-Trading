@@ -284,7 +284,46 @@ A methodical audit of the codebase (findings log §67) found that both US-equity
 (`yfinance_loader.py`, `yahoo_client.py`) served split/dividend-unadjusted prices — quantified
 on real data as a ~300-percentage-point total-return understatement for SPY over 2005-2026.
 Fixed and re-validated against the affected champions: **M1's Sharpe improved 0.535→0.616 and
-M2's improved 0.434→0.470, both with better drawdown too** — every metric moved the same,
+M2's improved 0.434→0.470, both with better drawdown too — see `vibe_trading_research_findings.md` §67
+
+## 9. Addendum (2026-07-02, same day): the raw run-card leaderboard's top entry audited and closed — no abandoned strategy found
+
+A methodical scan for strategies abandoned, or run before a relevant platform fix, that should be
+rerun (`vibe_trading_research_findings.md` §71) targeted the one genuinely undocumented item on
+the raw leaderboard: `agent/runs/20260630_044631_81_90164a`, a 15m SOXL/SOXS/SOXX mean-reversion
+strategy reporting 155%/yr — never logged anywhere in this arc, and already flagged by its own
+Monte Carlo (p=0.452, statistically insignificant) and 20-day sample. Extended to the maximum
+real data available (15m to ~60 days via a new-data train window; 1H unmodified and
+hold-time-rescaled variants to 2 real years) using the identical, unmodified signal code: **every
+extension is decisively negative** — loses money on genuinely new data one month earlier
+(Sharpe -2.63), and always underperforms simple buy-and-hold by 15-30 percentage points over
+real multi-month/multi-year OOS windows, with every bootstrap CI straddling zero. Closed as a
+short-window annualization artifact, exactly the failure mode named in §2.1 above. **No
+champion ranking change; no abandoned strategy exists in this codebase with unrealized,
+statistically credible profit** — the only remaining expected value sits behind the two
+budget-gated items already identified (P1.3 VRP data purchase, P2.2 `TUSHARE_TOKEN`).
+
+## 10. Addendum (2026-07-02, same day): P1.3 VRP monetization executed on a real, user-supplied Deribit trade tape — closed negative in its naive form
+
+The user supplied the complete real Deribit BTC option trade history (23.8M trades,
+2016-2026), obsoleting the assumed paid-CryptoDataDownload path and fully unblocking Edge 3
+(`vibe_trading_research_findings.md` §72). Two independent methodologies were built and run:
+(1) a proper non-overlapping VRP measurement (IV-minus-forward-realized-vol), which found the
+premium is real in *direction* but only marginally significant (p=0.07-0.15 depending on
+sub-period, not the previously-implied t=28.3 — that figure likely reflects an
+overlapping-window or variance-swap-payoff-formula difference, not a reproduced/contradicted
+result) and surfaced a materially worse tail event than previously known (COVID March 2020,
+-160 vol-points vs. the previously-cited -52.8); (2) an actual net-of-cost tradeable
+short-straddle backtest (real entry prices, real Deribit fees, empirically-measured spread,
+Black-Scholes daily marking from a trade-derived vol surface), which never clears Sharpe~1.0
+at any tested position size and is severely sensitive to an arbitrary rebalance-day choice
+(Sharpe swings -0.39 to +3.64 across 6 offsets for the IV-conditional variant) — the same
+rebalance-timing-luck confound already documented for every other strategy family on this
+platform. **Edge 3 is now closed in its naive (naked, hold-to-expiry, no delta-hedge) form —
+do not promote to the composite.** This is the arc's 7th documented instance of a real signal
+failing to monetize as a strategy, strengthening rather than weakening the standing
+local-optimum meta-finding. A delta-hedged or defined-risk (iron condor/butterfly)
+implementation remains a genuinely open, larger follow-on if this thread is resumed.** — every metric moved the same,
 positive direction, confirming this was a second conservative (never favorable) bias in the
 platform's reported numbers, joining the already-documented zero-cash-yield gap. The table in
 §2.2 above reflects the corrected values. CPA3 (the crypto+macro composite) moved by less than
@@ -294,3 +333,31 @@ third silent loader-truncation bug, after two already found this session), a con
 DSR/PBO utility (validated by exact reproduction of §33.4's hand-computed 99.35%/99.66%
 figures), an opt-in equity short-borrow fee, and an opt-in volume-scaled-slippage utility. See
 `vibe_trading_research_findings.md` §67 for full detail.
+
+## 11. Addendum (2026-07-02, same day): §72 audited, and the delta-hedged VRP follow-on executed — Edge 3's final shape
+
+An audit of §72's code found two flattering defects in the phase-2 straddle backtest (a ±3-day
+entry window that included future prints, and a Sharpe computed only over in-market days — the
+IV-conditional variant's 0.59 is 0.32 on a full-calendar basis); §72's no-go verdict survives
+both, strengthened. The delta-hedged implementation §72.4 left open was then actually built and
+run (`research/vrp_deribit/phase3_delta_hedged_backtest.py`, findings §73): hedging transforms
+the risk exactly as intended (max DD -40%→-9.6% unconditional at identical sizing; the COVID
+2020 tail contained; survivable even at 30% margin utilization) but net Sharpe stays small —
+hedged IV-conditional 0.31-0.34 at the pre-registered anchor, offset-mean 0.78 with the first
+sign-stable (6/6 positive) offset sweep of any VRP variant, and ≈zero correlation to Z4.
+**Edge 3's final shape: real, diversifying, survivable, but sub-promotion-bar on 25 trades.
+Disposition: forward-track quarterly as the tape accrues; do not promote; do not add structure.**
+
+## 12. Addendum (2026-07-02, same day): rounds 59-62 — forensics, execution, audit, and the combination question closed
+
+Raw-run forensics (§74) found four new quantified directions; all were executed (§75-78), audited
+with two conclusion-changing fixes (§79), and the natural "combine everything" question was
+answered with a pre-registered grid (§80). Net result: **ZD2** (ZA4 + shorts-enter-half /
+one-shot-double-at-10-days, built on the new `one_shot_resize` engine primitive) is the family's
+best form on all available evidence — it matches ZA4 on the bull-dominated design window and
+beats it on every axis in the burned bear year (Sharpe 1.04 vs 0.93, DD -23.0% vs -27.4%) — and
+every tested combination of additional treatments (both-sides durability, regime-conditional BTC
+reallocation) made things worse, closing the combination space empirically. Current frozen
+forward-arbitration lineup: ZA4 (champion) vs ZD2 (favored challenger) vs ZA4B
+(deployment-corrected 4-asset breadth), plus Z4/Z8/M1/CP3. Deployment economics: perps both
+sides for BTC; funding-sign-conditional wrapper for SOL shorts (real drag ~0.3-0.4%/yr, §79.1).
