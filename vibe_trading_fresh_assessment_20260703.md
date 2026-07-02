@@ -1,5 +1,13 @@
 # Fresh-Eyes Assessment — 2026-07-03
 
+> **SCALE CORRECTION (same day, §8):** after this assessment was written, the user
+> disclosed that actual deployment capital is **$1,000-5,000**, not the $1M the research
+> arc arbitrarily assumed. §8 re-derives every scale-dependent conclusion at true scale —
+> several invert (capacity becomes irrelevant; minimum lot sizes become the binding
+> constraint; the options expression becomes infeasible until capital grows; the ranked
+> path in §6 is revised in §8.6). Sections 1-7 remain valid as the $1M-scale analysis
+> and as the roadmap for scaled-up capital.
+
 **Mandate:** deliberately set aside the accumulated research log, plans, and momentum;
 re-derive the goal from first principles; assess the champions, the framework, and the
 paths forward; execute whatever analyses can be run on data already on disk. Four new
@@ -241,3 +249,137 @@ SOL-capacity re-measurement tool); all inputs are repo artifacts (`agent/runs/*/
 `research/vrp_deribit/derived/*`, the two option tapes). The capacity study is the one
 result that should graduate into the research log and drive an immediate decision
 (§6 items 1-2).
+
+---
+
+## 8. Scale correction: the real account is $1,000-5,000
+
+The $1M capital / $500k per-entry notional used throughout the research arc was an
+arbitrary development-time choice. Actual deployment capital is **$1-5k, potentially more
+later**. Every scale-dependent conclusion above is re-derived here at true scale. Three
+new analyses were executed for this section (live Deribit instrument specs; an exact
+lot-quantization study exploiting leg-P&L linearity in quantity; a deployable-
+configuration menu with leverage bootstrap) — scripts committed alongside the others
+(`quantization_study.py`, `retail_menu.py`).
+
+### 8.1 What survives unchanged
+
+All *percentage-space* research conclusions are scale-free and stand: the champion's
+edge and its virgin-year confirmation (§2), sleeve orthogonality and the composite's
+Sharpe 1.80 (§3), the per-unit economics of the H1 expression, every closed axis, and
+the framework verdict (§5). Percentage fees, spreads, and funding are identical at
+retail size; market impact drops to zero. What changes is which *instruments are
+reachable* and what the *objective* is.
+
+### 8.2 The capacity conclusion inverts twice
+
+At $1-5k the §4 capacity ceilings are irrelevant (the order is a rounding error of any
+book). The binding constraint flips to **minimum lot sizes** — verified live against
+Deribit's API (2026-07-03, put ATM ~28 DTE, real marks):
+
+| Venue instrument | Min lot | Min-lot premium today | Notional needed @10% budget |
+|---|---|---:|---:|
+| BTC option (min 0.1 BTC) | 0.1 BTC | **$246** | ≥ ~$2,500/entry |
+| SOL_USDC option (1 contract) | 10 SOL | **$58** | ≥ ~$580/entry |
+| ETH_USDC option (min 0.1 ETH) | 0.1 ETH | **$10** | ≥ ~$103/entry |
+
+So the §4 verdict reverses at retail scale: **SOL options are the reachable ones and BTC
+options are not** — the exact opposite of the $1M conclusion. (ETH options are the most
+granular of all, but no validated ETH direction stream exists; noted for the future,
+not actionable.)
+
+### 8.3 Quantization study: the H1 expression does not survive $1-5k
+
+Leg P&L is exactly linear in quantity, so lot-rounding effects can be computed exactly
+from the existing leg plans. Per-entry short notional grid, two policies — `floor`
+(round down, skip if under 1 lot; never overspends) and `min1` (always enter at ≥1 lot;
+overspends premium):
+
+| Per-entry notional | BTC: entered / P&L retention (floor) | BTC overspend (min1) | SOL: entered / retention (floor) | SOL overspend (min1) |
+|---:|---|---:|---|---:|
+| $250 | 0% / — | 10.1x | 0% / — | 4.1x |
+| $1,000 | 15% / 4% | 2.6x | 59% / 33% | 1.1x |
+| $2,500 | 50% / 4% | 1.2x | 100% / ~100%±noise | ~1.0x |
+| $5,000 | 95% / 39% | 1.0x | 100% / 90% | 1.0x |
+| $12,500 | 100% / 71% | 1.0x | 100% / 100% | 1.0x |
+| $25,000 | 100% / 101% | 1.0x | 100% / 100% | 1.0x |
+
+Reading: the `min1` policy's overspend is disqualifying below ~$2.5k/entry — a "10%
+bounded premium" that actually spends 2-10x the budget is a different (and worse) risk
+profile, not the validated strategy. The `floor` policy is faithful for **SOL from
+~$2,500-5,000 per entry** and for **BTC only from ~$12,500-25,000 per entry**. Mapping
+per-entry notional ≈ 50% of the crypto sleeve (the studied convention):
+
+- **SOL-H1 puts become faithful at a crypto sleeve of ~$5-10k** (account ~$10-20k at
+  50/50 weights, ~$16-33k at 30/70).
+- **BTC-H1 puts need a sleeve of ~$25-50k** (account ~$50-160k).
+- **At $1-5k: options expression is off the table. The deployable strategy is
+  linear-only.** The H1 finding is banked research that unlocks on schedule as capital
+  grows — which is exactly why forward-tracking it in the ledger (§6 item 2) still
+  matters now.
+
+### 8.4 The deployable menu at $1-5k (computed, full window + virgin forward year)
+
+| Config | Full ann/Sharpe/maxDD | Fwd-year ann/Sharpe/maxDD | Bootstrap med maxDD / P(DD<−30%) |
+|---|---|---|---|
+| 30/70 composite, 1x | +38.6% / 1.79 / −16% | +27.2% / 1.80 / −12% | −18% / 3% |
+| **30/70 composite, 1.5x** | +60.9% / 1.79 / −24% | +42.5% / 1.80 / −18% | −26% / 28% |
+| 30/70 composite, 2x | +85.1% / 1.79 / −32% | +58.8% / 1.80 / −23% | −34% / 70% |
+| 50/50 composite, 1x | +59.2% / 1.67 / −23% | +40.9% / 1.65 / −16% | −28% / 41% |
+| 70/30 composite, 1x | +80.3% / 1.60 / −31% | +54.8% / 1.56 / −20% | −38% / 88% |
+| crypto sleeve only, 1x | +111.5% / 1.54 / −44% | +75.6% / 1.49 / −27% | −52% / 99% |
+
+The textbook result shows up cleanly in the data: **levering the max-Sharpe blend
+dominates shifting weight toward the risky sleeve** (30/70@1.5x ≈ 50/50@1x in return,
+but Sharpe 1.79 vs 1.67 and tail risk 28% vs 41%). At small capital with high risk
+tolerance, 1.5x on the composite is comfortably below quarter-Kelly and is the rational
+"more return" knob — *if* the operational complexity of leverage is acceptable.
+
+### 8.5 What the account is actually for at $1-5k
+
+Absolute expectation-setting: $2,500 at the composite's forward rate ≈ **+$675/year**;
+at 1.5x ≈ +$1,060; crypto-sleeve-only ≈ +$1,900 with a ~50% drawdown likely somewhere on
+the path. No configuration turns $2.5k into income. The account's real output at this
+scale is a **verified live track record and a debugged operational process** — the
+asset that justifies deploying "potentially more later". That reframes every choice
+toward: run the exact process you would run at $50k, at $2.5k, and let the ledger and
+the live account confirm each other.
+
+### 8.6 Revised recommendations at true scale
+
+**Deploy (simple first):**
+1. **30/70 composite at 1x, linear-only.** Crypto sleeve: spot for longs (finest
+   granularity; perp minimums ~0.001 BTC / 1 SOL are workable but coarser), **BTC shorts
+   via perp** (positive-carry side, per the funding attribution), **SOL shorts via perp
+   with a funding-sign check** before entry (the measured real-funding drag is the SOL
+   short leg's known tax; skip or downsize when funding is strongly against). Macro
+   sleeve: fractional-share broker for SPY+GLD, monthly rebalance. Manual execution is
+   proportionate: entries arrive every few days, median hold ~9-10 days.
+2. **After 1-2 clean quarters, consider 1.5x** (perp leverage on the crypto sleeve;
+   2x-ETF blend or margin on the macro sleeve), per §8.4's dominance result.
+3. **Do NOT build live-execution infrastructure yet.** At $1-5k a daily signal
+   run + notification and manual orders is the right size; Nautilus live integration
+   becomes proportionate around the same capital level where options unlock (~$10-25k+).
+
+**Keep in the research/ledger lane (unchanged in kind, revised in urgency):**
+4. Forward-track H1 (both underlyings) and re-measure lot-feasibility + capacity
+   quarterly — the options expression unlocks at known capital thresholds (§8.3), SOL
+   first. The daily chain snapshotter remains worth its few hours.
+5. Third-orthogonal-sleeve research **drops in urgency**: China-A single-stock momentum
+   is not retail-accessible at $1-5k (Stock Connect lot sizes × 20-50 names ≫ account);
+   a two-sleeve composite is plenty at this scale. **Macro-breadth (ETF-implementable,
+   §6 item 5) is now the highest-value research item** because it is the only one that
+   deploys at true scale.
+6. One flag outside this platform's scope: at retail scale, **taxes and venue/broker
+   fee schedules are first-order** relative to a few-hundred-dollar annual P&L —
+   worth checking for the user's jurisdiction before the first trade.
+
+**Scaling map (what unlocks when):**
+
+| Capital | Unlocks |
+|---:|---|
+| $1-2.5k | linear 30/70 composite @1x; process/track-record building |
+| $2.5-5k | 1.5x leverage option; SOL puts *marginally* (1-2 contracts, 50/50 weights) |
+| $10-25k | SOL-H1 faithful; Nautilus live integration proportionate |
+| $50-150k | BTC-H1 faithful; China-A sleeve accessible; third-sleeve research pays |
+| ≥$500k | §4's capacity analysis becomes the operative constraint again |
