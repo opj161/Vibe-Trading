@@ -379,6 +379,9 @@ def cached_loader_fetch(
         return cached
 
     frame = fetch()
+    _warn_if_insufficient_coverage(
+        source=source, symbol=symbol, start_date=start_date, end_date=end_date, frame=frame,
+    )
     loader_cache_put(
         source=source,
         symbol=symbol,
@@ -389,6 +392,56 @@ def cached_loader_fetch(
         frame=frame,
     )
     return frame
+
+
+def _warn_if_insufficient_coverage(
+    *,
+    source: str,
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    frame: pd.DataFrame | None,
+) -> None:
+    """Log a warning when a loader returns meaningfully less history than requested.
+
+    Two loaders built on public HTTP endpoints with undocumented response
+    caps have silently truncated long-window requests to a fraction of what
+    was asked for — OKX's ``/market/candles`` (recent-window only, fixed by
+    falling through to ``/market/history-candles``) and Tencent's kline
+    endpoint (hard 500-bar cap per response, fixed by chunking). Both were
+    only caught because the resulting bar count looked suspiciously low —
+    there was no automated check. This is that check: a best-effort
+    tripwire, not a hard guarantee (a genuinely late-listed asset legitimately
+    starts later than requested, so this only WARNS, never raises or drops
+    data), applied uniformly to every loader routed through
+    :func:`cached_loader_fetch`.
+    """
+    if frame is None or frame.empty:
+        return
+    try:
+        requested_start = pd.Timestamp(start_date)
+        requested_end = pd.Timestamp(end_date)
+        actual_start = pd.Timestamp(frame.index.min())
+        requested_days = (requested_end - requested_start).days
+        if requested_days <= 0:
+            return
+        gap_days = (actual_start - requested_start).days
+        # Flag only substantial, hard-to-explain-by-late-listing gaps: at
+        # least 90 calendar days AND at least 20% of the requested window.
+        if gap_days >= 90 and gap_days >= 0.2 * requested_days:
+            logger.warning(
+                "%s/%s: requested history from %s but the earliest returned "
+                "bar is %s -- %d of %d requested days (%.0f%%) are missing. "
+                "This may be a silent loader truncation (seen before: OKX "
+                "candle-endpoint cap, Tencent 500-bar cap) rather than a "
+                "genuine late listing -- verify before trusting a long-window "
+                "backtest on this symbol.",
+                source, symbol, start_date, actual_start.date(),
+                gap_days, requested_days, 100.0 * gap_days / requested_days,
+            )
+    except Exception:
+        # Best-effort tripwire only; never let this check break a real fetch.
+        return
 
 
 def _loader_cache_payload(
