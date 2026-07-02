@@ -1,23 +1,31 @@
 """Statistical validation for backtest results.
 
-Three independent tools:
+Five independent tools:
   - Monte Carlo permutation test: is the strategy significantly better than random?
   - Bootstrap Sharpe CI: how stable is the risk-adjusted return?
   - Walk-Forward analysis: is performance consistent across time windows?
+  - Deflated Sharpe Ratio: does the observed Sharpe survive correcting for
+    non-normal returns and multi-trial selection bias?
+  - Probability of Backtest Overfitting (CSCV): how likely is it that the
+    best-of-N variant selected in-sample is merely the luckiest draw?
 
 Usage: called automatically by BaseEngine.run_backtest when config[\"validation\"]
-is present, or invoked directly on backtest outputs.
+is present, or invoked directly on backtest outputs. deflated_sharpe_ratio and
+probability_of_backtest_overfitting are opt-in (multi-trial searches only) and
+are not run automatically by run_validation.
 """
 
 from __future__ import annotations
 
 import json
 import math
+from itertools import combinations
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+from scipy import stats as _scipy_stats
 
 from backtest.models import TradeRecord
 
@@ -236,6 +244,190 @@ def walk_forward_analysis(
         "return_std": round(float(np.std(returns_list)), 6),
         "sharpe_mean": round(float(np.mean(sharpes_list)), 4),
         "sharpe_std": round(float(np.std(sharpes_list)), 4),
+    }
+
+
+# ─── Deflated Sharpe Ratio ───
+
+
+def deflated_sharpe_ratio(
+    returns: np.ndarray | pd.Series,
+    n_trials: int = 1,
+    sharpe_std_across_trials: Optional[float] = None,
+    bars_per_year: int = 252,
+) -> Dict[str, Any]:
+    """Deflated Sharpe Ratio (Bailey & Lopez de Prado, 2014).
+
+    Corrects the observed Sharpe ratio of the SELECTED (best-of-N) strategy
+    for two distinct effects: (1) non-normality of returns (skew/kurtosis)
+    via the Probabilistic Sharpe Ratio, and (2) selection bias from having
+    picked the best of N trials, via the expected maximum Sharpe achievable
+    purely by chance across N trials with the observed cross-trial Sharpe
+    dispersion.
+
+    This exact formula was computed correctly but ad hoc, independently, at
+    least eight times across this repo's own research log before being
+    consolidated here as a single reusable, tested implementation — every
+    prior instance re-derived it from scratch in a throwaway script, a real
+    (if so-far-benign) risk of methodology drift between sessions.
+
+    Args:
+        returns: Per-bar return series of the SELECTED (best) strategy —
+            e.g. ``equity_curve.pct_change().dropna()``.
+        n_trials: Number of trials/variants compared before selecting this
+            one. ``1`` disables the multi-trial deflation term (DSR then
+            reduces to the plain PSR against a null of zero Sharpe).
+        sharpe_std_across_trials: Standard deviation of ANNUALIZED Sharpe
+            ratios across the N trials (``sqrt(V[SR])`` in the paper).
+            Required when ``n_trials > 1``; ignored otherwise.
+        bars_per_year: Annualization factor — must match whatever factor the
+            trial pool's own Sharpe ratios were annualized with.
+
+    Returns:
+        Dict with ``observed_sharpe`` (annualized), ``expected_max_sharpe_null``
+        (annualized Sharpe expected from the best of N trials under a true-zero
+        null), ``dsr`` (probability the true Sharpe exceeds that null — the
+        headline number), ``psr_at_zero`` (single-trial-equivalent probability
+        the true Sharpe exceeds zero, for comparison against ``dsr``),
+        ``n_trials``, ``n_observations``, ``skew``, ``kurtosis_excess``.
+    """
+    arr = np.asarray(returns, dtype=float)
+    arr = arr[~np.isnan(arr)]
+    n_obs = len(arr)
+    if n_obs < 5:
+        return {"error": "need at least 5 return observations"}
+
+    std = arr.std(ddof=1)
+    if std <= 0:
+        return {"error": "zero-variance return series"}
+
+    sr_per_bar = float(arr.mean() / std)
+    sr_annual = sr_per_bar * math.sqrt(bars_per_year)
+
+    skew = float(pd.Series(arr).skew())
+    # pandas .kurtosis() is EXCESS kurtosis (normal == 0); the PSR formula
+    # uses raw kurtosis (normal == 3).
+    kurtosis_excess = float(pd.Series(arr).kurtosis())
+    kurt_raw = kurtosis_excess + 3.0
+
+    if n_trials is None or n_trials <= 1 or sharpe_std_across_trials is None:
+        n_trials_eff = 1
+        sr_star_annual = 0.0
+    else:
+        if sharpe_std_across_trials < 0:
+            raise ValueError("sharpe_std_across_trials must be >= 0")
+        n_trials_eff = int(n_trials)
+        euler_mascheroni = 0.5772156649
+        z1 = float(_scipy_stats.norm.ppf(1.0 - 1.0 / n_trials_eff))
+        z2 = float(_scipy_stats.norm.ppf(1.0 - 1.0 / (n_trials_eff * math.e)))
+        sr_star_annual = sharpe_std_across_trials * (
+            (1 - euler_mascheroni) * z1 + euler_mascheroni * z2
+        )
+
+    sr_star_per_bar = sr_star_annual / math.sqrt(bars_per_year)
+
+    denom = math.sqrt(
+        max(1.0 - skew * sr_per_bar + (kurt_raw - 1.0) / 4.0 * sr_per_bar**2, 1e-12)
+    )
+    z_dsr = (sr_per_bar - sr_star_per_bar) * math.sqrt(n_obs - 1) / denom
+    z_psr0 = (sr_per_bar - 0.0) * math.sqrt(n_obs - 1) / denom
+
+    return {
+        "observed_sharpe": round(sr_annual, 4),
+        "expected_max_sharpe_null": round(sr_star_annual, 4),
+        "dsr": round(float(_scipy_stats.norm.cdf(z_dsr)), 4),
+        "psr_at_zero": round(float(_scipy_stats.norm.cdf(z_psr0)), 4),
+        "n_trials": n_trials_eff,
+        "n_observations": n_obs,
+        "skew": round(skew, 4),
+        "kurtosis_excess": round(kurtosis_excess, 4),
+    }
+
+
+# ─── Probability of Backtest Overfitting (CSCV) ───
+
+
+def probability_of_backtest_overfitting(
+    returns_matrix: pd.DataFrame,
+    n_splits: int = 16,
+    bars_per_year: int = 252,
+) -> Dict[str, Any]:
+    """Probability of Backtest Overfitting via Combinatorially Symmetric
+    Cross-Validation (CSCV; Bailey, Borwein, Lopez de Prado & Zhu, 2015).
+
+    The more rigorous companion to :func:`deflated_sharpe_ratio` for a
+    multi-trial search: splits the shared time index into ``n_splits``
+    contiguous blocks, enumerates every way of assigning half the blocks to
+    an in-sample (IS) set and the complementary half to an out-of-sample
+    (OOS) set, and for each split picks whichever trial had the best IS
+    Sharpe, then checks where that trial's Sharpe RANKS among all trials
+    OOS. PBO is the fraction of splits where the IS-winner performs at or
+    below the OOS median — i.e. how often "the best backtest" was actually
+    the luckiest one, not the most robust one.
+
+    Args:
+        returns_matrix: T x N DataFrame — one column per strategy/trial
+            variant, one row per return observation, ALL trials aligned on
+            the SAME calendar dates (the entire point of CSCV is testing
+            every trial on identical time splits).
+        n_splits: Number of contiguous blocks (S) to split the T rows into;
+            must be even. ``C(S, S/2)`` combinations are evaluated — the
+            default 16 (``C(16,8)`` = 12,870 combinations) matches the
+            value used throughout this repo's own prior CSCV work.
+        bars_per_year: Annualization factor for the per-split Sharpe ratios
+            (does not affect the rank-based PBO result, only the reported
+            logit distribution's scale).
+
+    Returns:
+        Dict with ``pbo`` (headline number, in [0, 1]), ``n_combinations``,
+        ``n_strategies``, ``n_splits``, ``logit_mean``, ``logit_std``.
+    """
+    if n_splits % 2 != 0 or n_splits < 2:
+        raise ValueError("n_splits must be a positive even number")
+
+    n_obs, n_strategies = returns_matrix.shape
+    if n_obs < n_splits:
+        return {"error": f"need at least {n_splits} observations, got {n_obs}"}
+    if n_strategies < 2:
+        return {"error": "need at least 2 strategy columns to rank against"}
+
+    values = returns_matrix.to_numpy(dtype=float)
+    block_rows = np.array_split(np.arange(n_obs), n_splits)
+
+    def sharpe_of(rows: np.ndarray, col: int) -> float:
+        r = values[rows, col]
+        s = r.std()
+        return float(r.mean() / s * math.sqrt(bars_per_year)) if s > 0 else -np.inf
+
+    half = n_splits // 2
+    logits: List[float] = []
+    below_median = 0
+    n_combos = 0
+
+    for is_blocks in combinations(range(n_splits), half):
+        oos_blocks = [b for b in range(n_splits) if b not in is_blocks]
+        is_rows = np.concatenate([block_rows[b] for b in is_blocks])
+        oos_rows = np.concatenate([block_rows[b] for b in oos_blocks])
+
+        is_sharpes = [sharpe_of(is_rows, c) for c in range(n_strategies)]
+        best_col = int(np.argmax(is_sharpes))
+
+        oos_sharpes = np.array([sharpe_of(oos_rows, c) for c in range(n_strategies)])
+        rank = int((oos_sharpes <= oos_sharpes[best_col]).sum())
+        omega = min(max(rank / (n_strategies + 1), 1e-6), 1 - 1e-6)
+        logit = math.log(omega / (1 - omega))
+        logits.append(logit)
+        if logit <= 0:
+            below_median += 1
+        n_combos += 1
+
+    return {
+        "pbo": round(below_median / n_combos, 4),
+        "n_combinations": n_combos,
+        "n_strategies": n_strategies,
+        "n_splits": n_splits,
+        "logit_mean": round(float(np.mean(logits)), 4),
+        "logit_std": round(float(np.std(logits)), 4),
     }
 
 
