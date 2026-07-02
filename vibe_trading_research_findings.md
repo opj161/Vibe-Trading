@@ -2267,3 +2267,52 @@ Extracted and used edgeforge's genuine 1-second Hyperliquid perpetual tick data 
 ### 69.5 Net effect
 
 No champion ranking changes. Two closed threads (OI-crowding, AI/semi rotation) with clean, decisive negative results add to an already-strong evidence base. One genuinely promising new lead (China A value+momentum) that deserves a proper follow-up build, not yet a validated candidate. One nuanced methodological finding (bar-boundary re-test) that sharpens, rather than settles, the platform's understanding of when offset-luck dominates vs. when it doesn't.
+
+## 70. Round 55 (user-directed): deep trade-level forensics on the champion runs, an allocation-space refinement attempt with an important mechanics discovery, and China A's broad-universe discipline check
+
+Directive: analyze actual trades in the champion runs for correlations/patterns between winning and losing trades beyond §63's forensics, use findings to design improvements, and follow through on the prior round's China A lead.
+
+### 70.1 Deep trade forensics: MAE/MFE, giveback, and a strikingly clean holding-period signature
+
+Built a full trade-level dataset (518 round-trip trades across Z4 train/OOS, Z8 train, ZA4 train) with reconstructed max adverse/favorable excursion (MAE/MFE) per trade, entry-time EMA-gap magnitude, entry-time realized vol, and entry-time chop-scalar level — using the underlying OHLCV price paths, not just entry/exit prices.
+
+**Winners give back the majority of their peak profit before the signal-flip exit fires.** Mean MFE for winning trades is 57.2% (median 23.8%), but mean realized return is only 34.9% (median 10.3%) — a mean giveback of **56.4% of peak unrealized profit**, and 37 of 64 winning trades gave back more than half. Losing trades show the opposite, cleaner pattern: mean MAE (-4.83%) is nearly identical to final return_pct (-5.67%), with essentially zero recovery (mean recovery-from-MAE: -0.84%) — **losing trades are "clean losses": they sink to roughly their worst point and get cut there, with no missed-recovery cost.** This means any effort to reduce whipsaw losses via a smarter exit would find little room to improve (losses are already being cut efficiently); the real opportunity, if any, is in the giveback on winners.
+
+**A strikingly clean, out-of-sample-confirmed holding-period signature** (train, n=191 → OOS, n=55, both windows independently show the same monotonic pattern):
+
+| Holding period | Train win rate / avg return / total P&L | OOS win rate / avg return |
+|---|---|---|
+| 0-7 days | 0% / -5.3% to -6.0% / **-$9.1M combined** | 7.1% / -3.3% |
+| 8-14 days | 17.6% / -5.7% / -$3.5M | 27.3% / -3.3% |
+| 15-30 days | 70.0% / +2.9% / +$2.3M | 62.5% / +2.0% |
+| 31-60 days | 96.0% / +38.6% / +$16.1M | 100% (31+d) / +19.0% |
+| 61+ days | 100% / +183.6% / +$16.5M | (folded into 31+d above) |
+
+**Every trade held less than 8 days in the training window lost money; every trade held past 30 days won.** This is a much more precise quantification than §25.2's original qualitative "few big wins fund many small losses" — it locates a strikingly sharp inflection point around 2-3 weeks, and the pattern replicates independently on the true OOS window (7.1%/27.3%/62.5%/100% win rates by the same buckets).
+
+**Entry EMA-gap magnitude is a real but weak predictor.** Win rate rises monotonically by entry-gap quartile (27.1%→29.2%→34.0%→43.8%), and durability (holding_days) correlates positively with entry gap (r=0.17 train, r=0.12 OOS) — directionally consistent, economically sensible (a stronger initial signal is somewhat more likely to be a genuine, durable trend rather than a marginal crossover), but the correlation with final return is weak and drops further OOS (r=0.10 train → r=0.04 OOS) — not strong enough on its own to trust as an entry-sizing rule.
+
+**Same-window cross-asset trade correlation confirms the chop-scalar's own premise.** BTC and SOL trades entered within 5 days of each other show return correlation of 0.32 — a real, moderate, positive relationship (consistent with, and a further quantification of, §23's flip-clustering finding), though far from a fully shared-outcome signal.
+
+**Asset/direction decomposition** (consistent with, not new versus, prior findings): SOL contributed $17.2M of total P&L vs. BTC's $5.1M despite similar trade counts and a shorter average hold — confirms SOL as the dominant profit engine. Longs contributed $20.7M vs. shorts' $1.6M in this bull-tilted extended window — a regime effect, not new information.
+
+### 70.2 ZD1 — a one-time "durability confirmation" position add-on, and a genuine platform-mechanics discovery
+
+Motivated directly by §70.1's holding-period signature: rather than trying to predict durability at entry (the weak EMA-gap signal), the idea tested was a **one-time step-up in position size once a trade survives a threshold (15 trading days) without its direction flipping** — deliberately designed to be different from the already-rejected continuous vol-based mid-hold resizing (§43): the underlying per-symbol magnitude is held frozen (constant) through each holding streak and only changes once, at the durability threshold, engineered as an explicit step function rather than a continuously-recomputed series.
+
+**Result: mixed (extended window worse, OOS window better) — but the test is confounded by a genuine, previously-undocumented platform mechanic, not a clean read on the underlying idea.** Enabling `rebalance_threshold` (required for ANY mid-hold size change to take effect at all, per the platform's entry-locked-sizing default) produced 221-245 weight-change events per asset over the window — far more than the ~71 "one genuine step-up per surviving trade" expected. **Root cause, verified**: `_maybe_resize`'s trigger condition (`abs(target_abs_weight - current_weight) < threshold`) compares against the position's *implied weight*, which is inherently price-dependent (`size × price / equity`) — so even a perfectly constant *target* weight drifts away from the *current implied* weight as the position's price moves and equity compounds, triggering spurious "rebalance back toward the constant target" events on ordinary price appreciation. This silently reintroduces a diluted version of §43's exact failure mode (trimming winners as they rally) as an unavoidable side effect of using `rebalance_threshold` at all for *any* purpose, not just continuous vol-target resizing specifically. **This is new, useful platform knowledge**: `rebalance_threshold` is fundamentally a weight-maintenance mechanism, not a quantity-freeze-until-a-later-quantity-change mechanism — implementing a genuine "frozen quantity, one later step" design would need a new engine primitive (comparing against position *quantity*, not implied weight), which is a real but properly-scoped future engineering task, not a quick config change. **The durability-add-on idea itself is not refuted by this test** — it remains a plausible, well-motivated lead, but this specific implementation cannot cleanly test it, and no conclusion should be drawn about the underlying idea from these numbers.
+
+### 70.3 China A value+momentum composite: the broad-universe discipline check reverses last round's promising result
+
+Followed through on §69.3's flagged next step: extended the value+momentum composite (CNM2, 40 stocks, Sharpe 0.50 vs. control's 0.38, DSR 79.7%) to an 85-stock broader universe (40 additional liquid large/mid-caps, P/B data fetched free via akshare, same methodology).
+
+| Universe | Equal-weight control Sharpe | Value+momentum composite Sharpe |
+|---|---:|---:|
+| 40-stock (§69.3) | 0.38 | **0.50** (composite wins) |
+| 85-stock (this round) | **0.52** | 0.21 (control wins, decisively) |
+
+**The result does not just weaken — it reverses.** On the broader universe, the composite's Sharpe collapses to 0.21 while the *control's* Sharpe improves to 0.52. This is exactly the same disciplined "broaden the universe and see if it survives" check that §57 already applied to crypto cross-sectional momentum (also reversed on broadening) — and the outcome is the same: **CNM2's original 40-stock result was very likely a small-N artifact of that specific universe's composition, not a genuine, scalable China A value+momentum edge.** This closes the thread with substantially more confidence than leaving it at "one promising 19-trade result" — the correct, disciplined response to a promising-but-thin lead is exactly this kind of robustness check, and it did not survive. **Do not pursue this composite further without a fundamentally different universe-construction approach** (point-in-time index membership, which remains gated behind the TUSHARE_TOKEN decision) — more ad hoc stock-list variations would be exactly the kind of untethered fishing this repo's own standing discipline warns against.
+
+### 70.4 Net effect
+
+No champion ranking changes. The trade forensics (§70.1) meaningfully sharpens this platform's understanding of *why* Z4 wins and loses (the 15-day durability threshold is a genuinely new, precise, OOS-confirmed finding) without yet yielding a cleanly implementable improvement — the natural next idea it motivated (ZD1) hit a real platform-mechanics wall worth documenting for any future attempt. China A's value+momentum lead is now closed, properly, via the discipline that's supposed to catch exactly this failure mode. The forward-validation ledger (`forward_validation/`) remains the correct mechanism for generating genuinely new evidence on the standing champions from here.
