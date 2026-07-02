@@ -123,6 +123,105 @@ class TestGetChart:
         }
         assert rows[1]["trade_date"] == 1700086400
 
+    def test_applies_adjclose_factor_to_ohlc_proportionally(self, monkeypatch):
+        """A dividend/split adjustment factor derived from adjclose must be
+        applied to open/high/low/close uniformly, preserving intrabar
+        ratios (verified against yfinance's own auto_adjust=True behavior:
+        every O/H/L/C in a bar scales by the same adjclose/close factor)."""
+
+        def fake_get_json(url, **kwargs):
+            return {
+                "chart": {
+                    "error": None,
+                    "result": [
+                        {
+                            "timestamp": [1700000000, 1700086400],
+                            "indicators": {
+                                "quote": [
+                                    {
+                                        "open": [100.0, 102.0],
+                                        "high": [105.0, 103.0],
+                                        "low": [95.0, 101.0],
+                                        "close": [102.0, 102.5],
+                                        "volume": [1000, 2000],
+                                    }
+                                ],
+                                # Second bar is post-ex-dividend: adjclose
+                                # is 1% below raw close, simulating a $1.02
+                                # per-share distribution.
+                                "adjclose": [{"adjclose": [102.0, 101.475]}],
+                            },
+                        }
+                    ],
+                }
+            }
+
+        monkeypatch.setattr(yahoo_client, "throttled_get_json", fake_get_json)
+
+        rows = yahoo_client.get_chart("SPY.US", interval="1d", range_="5d")
+
+        # First bar: adjclose == close, factor is 1.0, values unchanged.
+        assert rows[0] == {
+            "trade_date": 1700000000,
+            "open": 100.0,
+            "high": 105.0,
+            "low": 95.0,
+            "close": 102.0,
+            "volume": 1000.0,
+        }
+        # Second bar: factor = 101.475 / 102.5 == 0.99, applied to all of OHLC.
+        factor = 101.475 / 102.5
+        assert rows[1]["open"] == pytest.approx(102.0 * factor)
+        assert rows[1]["high"] == pytest.approx(103.0 * factor)
+        assert rows[1]["low"] == pytest.approx(101.0 * factor)
+        assert rows[1]["close"] == pytest.approx(102.5 * factor)
+        # Volume is never adjusted.
+        assert rows[1]["volume"] == 2000.0
+        # Intrabar ratio must be preserved exactly through the adjustment.
+        assert rows[1]["high"] / rows[1]["close"] == pytest.approx(103.0 / 102.5)
+
+    def test_missing_adjclose_falls_back_to_raw_ohlc(self, monkeypatch):
+        """Some symbols (e.g. indices, non-equity) may not carry an
+        adjclose series at all — must fall back to raw OHLC unchanged
+        rather than crash or silently zero everything out."""
+
+        def fake_get_json(url, **kwargs):
+            return {
+                "chart": {
+                    "error": None,
+                    "result": [
+                        {
+                            "timestamp": [1700000000],
+                            "indicators": {
+                                "quote": [
+                                    {
+                                        "open": [10.0],
+                                        "high": [10.5],
+                                        "low": [9.5],
+                                        "close": [10.2],
+                                        "volume": [1000],
+                                    }
+                                ],
+                                # No "adjclose" key at all.
+                            },
+                        }
+                    ],
+                }
+            }
+
+        monkeypatch.setattr(yahoo_client, "throttled_get_json", fake_get_json)
+
+        rows = yahoo_client.get_chart("^GSPC", interval="1d", range_="5d")
+
+        assert rows[0] == {
+            "trade_date": 1700000000,
+            "open": 10.0,
+            "high": 10.5,
+            "low": 9.5,
+            "close": 10.2,
+            "volume": 1000.0,
+        }
+
     def test_period_window_when_no_range(self, monkeypatch):
         captured: Dict[str, Any] = {}
 

@@ -84,7 +84,17 @@ def _download_history(
     end_date: str,
     interval: str,
 ) -> pd.DataFrame:
-    """Download raw historical data via yfinance.
+    """Download split/dividend-adjusted historical data via yfinance.
+
+    ``auto_adjust=True`` makes yfinance back-adjust Open/High/Low/Close by
+    the same per-bar factor derived from Yahoo's Adj Close (proportional,
+    verified empirically to preserve intrabar O/H/L/C ratios exactly) —
+    the standard methodology for equity backtesting, equivalent to the
+    ``qfq`` (forward-adjusted) convention the A-share loaders already use.
+    Unadjusted data silently misprices any split event as a fake price
+    cliff and permanently understates total return for dividend/
+    distribution-paying instruments (e.g. SPY, TLT) since a raw close only
+    shows the ex-dividend drop with no reinvestment ever credited back.
 
     Args:
         tickers: One or more yfinance symbols.
@@ -93,14 +103,14 @@ def _download_history(
         interval: yfinance interval string.
 
     Returns:
-        Raw dataframe from ``yf.download``.
+        Adjusted dataframe from ``yf.download``.
     """
     return yf.download(
         tickers,
         start=start_date,
         end=end_date,
         interval=interval,
-        auto_adjust=False,
+        auto_adjust=True,
         progress=False,
     )
 

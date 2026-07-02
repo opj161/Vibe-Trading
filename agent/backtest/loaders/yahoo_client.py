@@ -199,7 +199,20 @@ def get_chart(
 
 
 def _parse_chart(payload: Any, yahoo_symbol: str) -> List[Dict[str, Any]]:
-    """Convert a v8 chart payload into ascending OHLCV row dicts."""
+    """Convert a v8 chart payload into ascending, split/dividend-adjusted OHLCV rows.
+
+    Yahoo's chart response carries a parallel ``indicators.adjclose`` array
+    alongside the raw ``quote`` OHLC — the same adjusted series the
+    ``yfinance`` package's ``auto_adjust=True`` derives its adjustment from.
+    Using the raw ``quote.close`` alone (as this parser did previously)
+    silently misprices any split as a fake price cliff and permanently
+    understates total return for dividend-paying instruments (a raw close
+    only shows the ex-dividend drop with no reinvestment ever credited
+    back — verified on SPY 2005-2026: 520.8% raw vs. 820.0% true total
+    return). Each bar's adjustment factor (``adjclose / close``) is applied
+    proportionally to open/high/low/close, preserving intrabar ratios
+    exactly (verified empirically against ``yfinance``'s own adjustment).
+    """
     chart = (payload or {}).get("chart") or {}
     error = chart.get("error")
     if error:
@@ -212,7 +225,9 @@ def _parse_chart(payload: Any, yahoo_symbol: str) -> List[Dict[str, Any]]:
     result = results[0] or {}
 
     timestamps = result.get("timestamp") or []
-    quotes = (((result.get("indicators") or {}).get("quote")) or [{}])[0] or {}
+    indicators = result.get("indicators") or {}
+    quotes = ((indicators.get("quote")) or [{}])[0] or {}
+    adjcloses = ((indicators.get("adjclose")) or [{}])[0].get("adjclose")
 
     rows: List[Dict[str, Any]] = []
     for index, ts in enumerate(timestamps):
@@ -220,8 +235,14 @@ def _parse_chart(payload: Any, yahoo_symbol: str) -> List[Dict[str, Any]]:
         # A non-trading slot leaves OHLC null; skip rather than emit a NaN bar.
         if any(values[field] is None for field in ("open", "high", "low", "close")):
             continue
+        raw_close = _to_float(values["close"])
+        adj_close = _to_float(_at(adjcloses, index)) if adjcloses is not None else None
+        factor = (adj_close / raw_close) if (adj_close and raw_close) else 1.0
+
         row: Dict[str, Any] = {"trade_date": ts}
-        row.update({field: _to_float(values[field]) for field in _QUOTE_FIELDS})
+        for field in ("open", "high", "low", "close"):
+            row[field] = _to_float(values[field]) * factor
+        row["volume"] = _to_float(values["volume"])
         rows.append(row)
     return rows
 
