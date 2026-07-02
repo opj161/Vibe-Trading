@@ -1,0 +1,12 @@
+=== BTC: 5 coverage-skipped short opt_budget runs ===
+  BTC-0009: total=+72,042  legs=[('expiry', 103659), ('flip', -31617)]
+  BTC-0010: total=+4,136  legs=[('expiry', 32994), ('flip', -28858)]
+  BTC-0028: total=+280,866  legs=[('expiry', 329058), ('flip', -48191)]
+  BTC-0069: total=-6,687  legs=[('flip', -6687)]
+  BTC-0101: total=+99,346  legs=[('expiry', 134489), ('flip', -35143)]
+  SUM: expiry-exit (exact) = +600,199   flip-exit (BS-approximated) = -150,495
+=== SOL_USDC: 3 coverage-skipped short opt_budget runs ===
+  SOL_USDC-0084: total=-21,761  legs=[('flip', -21761)]
+  SOL_USDC-0110: total=+267,101  legs=[('expiry', 291068), ('flip', -23967)]
+  SOL_USDC-0123: total=+69,458  legs=[('flip', 69458)]
+  SUM: expiry-exit (exact) = +291,068   flip-exit (BS-approximated) = +23,729

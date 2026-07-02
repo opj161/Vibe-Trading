@@ -1,0 +1,15 @@
+saved /home/j_opp/projects/Vibe-Trading/research/nautilus_deribit_options/derived/phase6_mode_b.csv  (326 rows)
+
+=== BTC ===
+spot baseline (all runs)              :    1,244,141
+H1 Mode A (verified Vibe convention)  :    1,563,289
+H1 Mode B (covered legs re-marked)    :    1,515,316   -> H1 > spot: True
+covered short opt_budget runs         : 45  (Mode A -64,185 -> Mode B -112,158, diff -47,973)
+coverage-skipped short runs           : 5  (held at Mode A value +449,704)
+
+=== SOL_USDC ===
+spot baseline (all runs)              :      209,225
+H1 Mode A (verified Vibe convention)  :      262,160
+H1 Mode B (covered legs re-marked)    :      283,696   -> H1 > spot: True
+covered short opt_budget runs         : 17  (Mode A -231,482 -> Mode B -209,946, diff +21,535)
+coverage-skipped short runs           : 3  (held at Mode A value +314,797)
