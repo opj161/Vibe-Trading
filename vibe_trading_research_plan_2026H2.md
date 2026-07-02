@@ -278,6 +278,7 @@ rejected** (cost-free-leverage trap, §64.3).
 | P2.3 composite refresh | **Done** | CPA3 (full-deploy ×2 + crypto-leg regime damp + 30/70): ann 45.7%, Sharpe 1.402, Calmar 1.55 — best composite yet; frozen for forward validation (§65.2) |
 | P2.5 (new) US AI/semi rotation study | Open — hypothesis-generation only | From the report's P5; treat archive short-window runs as hypotheses, never evidence |
 | P3 additions | Open, deferred | OI/crowding data (report P2 residue), event/unlock calendars (report P6) |
+| NEW: platform-limitations audit + fixes | **Done** | §67: yfinance/yahoo_client split-dividend adjustment fixed (M1 Sharpe 0.535→0.616, M2 0.434→0.470, both metrics improved across the board — CPA3 essentially unchanged, dilution effect); data-sufficiency tripwire added (structural defense against a 3rd truncation bug); DSR/PBO consolidated into `validation.py` (exact-reproduction-validated against §33.4); equity short-borrow fee + volume-scaled-slippage utility added (both opt-in, zero behavior change by default) |
 
 ## 7. Sources (external research, retrieved 2026-07-02)
 

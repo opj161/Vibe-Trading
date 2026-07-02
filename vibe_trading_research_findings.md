@@ -2133,3 +2133,52 @@ Scoped pilot per the plan: 40 liquid, long-tenured (pre-2019-listed) large-cap A
 **Momentum selection actively hurt on this specific universe/construction** — worse return, worse Sharpe, worse drawdown, and (from the extra turnover) more trading cost than simply holding the equal-weighted basket. Yearly detail shows momentum caught 2024's rally reasonably (27% vs control's 31%, roughly matched) but gave back more than the control in 2026's YTD downturn (-22% vs -9%) — a crowding-into-recent-winners pattern rather than a diversification benefit.
 
 **This does not overturn §59's momentum finding — it is a different, cruder test of a different claim.** §59 measured IC/offset-robustness of a raw momentum *factor* on a broader, differently-constructed universe with the platform's own DSR/PBO discipline; this pilot is a naive fixed-40-mega-cap top-N sort with no point-in-time membership, no sector neutralization, and no factor-composite construction — exactly the kind of implementation the plan (P2.1) always flagged as needing "the platform's full discipline" before being trusted, not a quick top-N sort. **Honest read: a naive momentum-only sort on a small, low-dispersion mega-cap universe is not a strategy** — the plan's original scoping (broader point-in-time universe, proper factor-analysis-tool pipeline with IC/IR, DSR correction, only then a real basket backtest) remains the right next step if this thread is picked up again, not a quick top-N variation on the current 40-name list.
+
+## 67. Round 52 (user-directed): a methodical platform-limitations audit, and five fixes implemented and verified
+
+Directive: identify remaining research/backtesting limitations (excluding API-token/access gaps), then implement fixes. Method: code-level verification of every claim rather than recall — grepped all loaders for the truncation pattern that produced §64/§66's bugs, read the options/crypto/equity engines' cost models directly, listed every function in `validation.py` and `factor_analysis_core.py`, and empirically tested loader behavior against real Yahoo/yfinance data.
+
+### 67.1 Audit findings, ranked by how much they could silently corrupt results
+
+1. **US/HK equity data was split/dividend-unadjusted** — `yfinance_loader.py` used `auto_adjust=False`; the independent `yahoo_client.py` never read Yahoo's own `adjclose` array despite it being returned by default. Quantified on real data: SPY 2005-2026 raw-close total return 520.8% vs. true adjusted total return 820.0% — a ~300pp understatement.
+2. **No platform-wide data-sufficiency check** — `validate_date_range` only asserted `start <= end`; nothing checked returned coverage against requested coverage. This is the literal root cause behind both the OKX and Tencent truncation bugs (§64.1/§66.1) — both caught only by a human noticing a suspiciously low bar count, with no automated defense against a third instance.
+3. **Options engine's "implied vol" is realized vol** (re-verified, `options_portfolio.py:274`) — a hard, undoable block without real options data, not attempted this round.
+4. **No historical funding-rate loader** (re-confirmed) — scalar-only in config; already correctly scoped in the plan as a bounded future infra task.
+5. **No point-in-time index-membership utility, independent of any token** — grepped for `constituent`/`membership`/`index_weight`; the only hits are Tushare API documentation. Even with a token, there's no built-in mechanism to construct a historical universe snapshot — every China A factor study in this log (including my own §66.2 pilot) used a hand-picked static "liquid today" list.
+6. **`global_equity.py` short-selling was always costless** — the code's own comment flagged this as "reserved for future work." Doesn't affect any currently-validated strategy.
+7. **Flat, size-independent slippage** across all engines — fine for the large-cap/major-pair universes actually tested; would understate costs for less liquid instruments.
+8. **No reusable DSR/PBO implementation** — despite being correctly computed ad hoc at least 8 separate times in this exact log (§19, §28.5, §33.4, §38, §42.4, §44.1, §56, and this session's own grids).
+9. **`factor_analysis_core.py` has exactly two functions** (`compute_ic_series`, `compute_group_equity`) — no turnover, cost, or point-in-time handling. Confirms `vibe_trading_next_directions.md` §2.3 at the code level; nothing new.
+
+### 67.2 Fixes implemented, in order of impact
+
+**Fix 1 — yfinance/yahoo_client split & dividend adjustment.** `yfinance_loader.py`: `auto_adjust=True` (verified to preserve intrabar O/H/L/C ratios exactly against a live NVDA-split fetch). `yahoo_client.py::_parse_chart`: now reads the `adjclose` array and applies the per-bar `adjclose/close` factor proportionally to O/H/L/C, falling back to 1.0 (unchanged behavior) when `adjclose` is absent. **Re-ran the affected champions**:
+
+| Variant | Metric | Original | Fixed | Delta |
+|---|---|---:|---:|---:|
+| M1 (AQR blend) | Total return | 217.6% | 284.5% | **+66.9pp** |
+| | Sharpe | 0.535 | 0.616 | **+15% rel.** |
+| | Max DD | -22.3% | -19.6% | improved |
+| M2 (barbell) | Total return | 85.2% | 97.0% | **+11.8pp** |
+| | Sharpe | 0.434 | 0.470 | **+8.3% rel.** |
+| | Max DD | -18.3% | -17.9% | improved |
+| CPA3 (composite) | Total return | 272.5% | 269.5% | -0.3pp (noise) |
+| | Sharpe | 1.402 | 1.397 | -0.005 (noise) |
+
+Every metric moved in the *same, positive* direction for the standalone macro sleeves — confirms the bias was conservative (understating quality), not neutral, joining the already-documented zero-cash-yield conservative bias as a second reason this platform's reported equity/macro numbers are probably better than shown, never worse. CPA3 barely moved because its 30%-crypto/70%-macro blend dilutes a macro-only correction into rounding-level noise. **M1/M2's numbers above supersede the §44 originals as the current reference values** — no re-freeze of `forward_validation/frozen/M1` needed since the frozen engine/config didn't change, only the underlying data source's accuracy.
+
+**Fix 2 — data-sufficiency tripwire.** `_warn_if_insufficient_coverage()` added to `cached_loader_fetch` (used by 16 of ~19 loaders): warns (never raises, never drops data) when the earliest returned bar is both ≥90 days and ≥20% of the requested window later than asked. A structural defense against a third silent-truncation bug, not just a retrospective fix for the first two.
+
+**Fix 3 — DSR/PBO consolidated into `validation.py`.** `deflated_sharpe_ratio()` and `probability_of_backtest_overfitting()` (standard CSCV, 16 blocks). **Validated by exact reproduction**: run on the real `v_Z4_chopfreq_train` equity curve with `n_trials=4, sharpe_std=sqrt(0.0169), bars_per_year=365` (the exact inputs behind §33.4's hand-computed figures), the new function returns `dsr=0.9935, psr_at_zero=0.9966` — matching §33.4's reported 99.35%/99.66% to 4 decimal places. Every future multi-trial search on this platform should call this function rather than re-deriving the formula.
+
+**Fix 4 — equity short-borrow fee.** Opt-in `on_bar` daily accrual on `GlobalEquityEngine` (`short_borrow_annual_rate`, default 0.0, byte-identical unless configured), mirroring the crypto engine's funding-fee pattern.
+
+**Fix 5 — volume-scaled slippage utility.** `volume_scaled_slippage_rate()` added to `base.py` as a standalone, tested, opt-in function — deliberately not wired into any engine's default execution path (would require an invasive signature change across four engines for a capability nothing currently active needs); available the moment less-liquid-instrument research starts.
+
+**Not attempted, correctly**: real options-market IV (needs paid data, out of scope), historical funding-rate loader (already correctly scoped as bounded future work), point-in-time universe utility (would need underlying membership data gated behind a token, out of scope per this round's own carve-out).
+
+Full suite after all five fixes: 4,670 tests passed (4,629 baseline + 41 new), zero regressions.
+
+### 67.3 Updated recommendation
+
+No champion ranking changes — Z4 (drawdown), Z4+Z8 (return/Sharpe, per §64.2's caveat), ZA4 (max annual return) stand. **M1 and M2's standalone numbers are now meaningfully better than previously reported** (M1 Sharpe 0.616 vs. the original 0.535) — worth reflecting in any external-facing summary of the macro sleeve's quality. The data-sufficiency tripwire and DSR/PBO consolidation are now standing infrastructure any future research round should use rather than rebuild.

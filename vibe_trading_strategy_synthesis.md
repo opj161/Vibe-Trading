@@ -60,8 +60,8 @@ never re-tuned), and ranks only strategies that have both.
 | 3 | L — BTC+SOL, drop-ETH baseline | `v_L_dropeth_train` / `_OOS_TEST` | 102.2% / 1.48 / -46.7% | +47.8% / 1.06 / -31.4% | Valid fallback |
 | 4 | Z0 — corrected control (no scalar) | `v_Z0_control_train` / `_OOS_TEST` | 90.0% / 1.44 / -44.4% | +53.8% / 1.18 / -29.1% | Control |
 | 5 | K — 3-asset long-bias tilt | `v_K_longbias_fixedhook_train` / `_OOS_TEST` | 74.7% / 1.39 / -30% | +45.2% / 1.10 / -30.8% | Superseded by L/Z4 |
-| 6 | M2 — macro barbell (SPY+GLD) | `v_M2_macro_barbell_full` | 2.9%/yr over 21y / 0.43 / -18.3% | +14.5% / 1.10 / (small) | Validated sleeve |
-| 7 | M1 — macro AQR blend (SPY+GLD) | `v_M1_macro_aqrblend_full` | 5.5%/yr over 21y / 0.54 / -22.3% | +7.1% / 1.13 / (small) | Validated sleeve |
+| 6 | M2 — macro barbell (SPY+GLD) | `v_M2_macro_barbell_full` | 97.0%/21y / **0.47** / -17.9% (§67-corrected) | +14.5% / 1.10 / (small) | Validated sleeve |
+| 7 | M1 — macro AQR blend (SPY+GLD) | `v_M1_macro_aqrblend_full` | 284.5%/21y / **0.62** / -19.6% (§67-corrected) | +7.1% / 1.13 / (small) | Validated sleeve |
 
 Composite portfolio (full-window 2023-01→2026-06, includes the OOS year; no separate frozen OOS):
 
@@ -275,3 +275,22 @@ check (+57.2% / Sharpe 1.29 / DD -27.4%). **Champions unchanged for Sharpe/DD ma
 variant.** Z8 vs ZA4 must be arbitrated on fresh forward data from 2026-07-01 — the old OOS
 window is burned. Also: gross-recovery cannot be stacked under Z8's vol overlay (ZA3,
 degenerate self-cancellation).
+
+---
+
+## 8. Addendum (2026-07-02, same day): a platform-limitations audit found and fixed a real, corroborating data bug
+
+A methodical audit of the codebase (findings log §67) found that both US-equity loader paths
+(`yfinance_loader.py`, `yahoo_client.py`) served split/dividend-unadjusted prices — quantified
+on real data as a ~300-percentage-point total-return understatement for SPY over 2005-2026.
+Fixed and re-validated against the affected champions: **M1's Sharpe improved 0.535→0.616 and
+M2's improved 0.434→0.470, both with better drawdown too** — every metric moved the same,
+positive direction, confirming this was a second conservative (never favorable) bias in the
+platform's reported numbers, joining the already-documented zero-cash-yield gap. The table in
+§2.2 above reflects the corrected values. CPA3 (the crypto+macro composite) moved by less than
+a rounding error, since its 30%-crypto/70%-macro blend dilutes a macro-only correction into
+noise. Also fixed in the same round: a structural data-sufficiency tripwire (defends against a
+third silent loader-truncation bug, after two already found this session), a consolidated
+DSR/PBO utility (validated by exact reproduction of §33.4's hand-computed 99.35%/99.66%
+figures), an opt-in equity short-borrow fee, and an opt-in volume-scaled-slippage utility. See
+`vibe_trading_research_findings.md` §67 for full detail.
