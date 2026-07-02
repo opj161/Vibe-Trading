@@ -1,0 +1,23 @@
+loading tape...
+
+runs=95 option-entry-skipped=2
+
+SPOT         total=  +1,244,141  ann= +15.5%  sharpe=  0.91  maxDD= -18.3%  DSR= 98.5%
+OPT-DELTA    total=  +1,833,985  ann= +20.4%  sharpe=  0.84  maxDD= -29.1%  DSR= 97.9%
+OPT-BUDGET   total=  +1,624,512  ann= +18.7%  sharpe=  0.91  maxDD= -21.9%  DSR= 98.6%
+
+--- per-run mean P&L by duration bucket (the core claim) ---
+            spot                  opt_delta                  opt_budget                 
+            mean        sum count      mean        sum count       mean        sum count
+bucket                                                                                  
+<8d     -25475.0  -866148.0    34  -21156.0  -719309.0    34   -17434.0  -592756.0    34
+8-30d   -10725.0  -418290.0    39  -23110.0  -901307.0    39   -19901.0  -776155.0    39
+>30d    114935.0  2528579.0    22  157027.0  3454601.0    22   136065.0  2993424.0    22
+
+--- by direction ---
+          spot  opt_delta  opt_budget
+dir                                  
+-1     66371.0   324592.0    385519.0
+ 1   1177770.0  1509393.0   1238994.0
+
+saved /home/j_opp/projects/Vibe-Trading/research/vrp_deribit/derived/phase4_per_run.csv

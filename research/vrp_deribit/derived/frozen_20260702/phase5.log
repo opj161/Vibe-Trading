@@ -1,0 +1,36 @@
+loading SOL_USDC tape...
+665,251 trades parsed (0 instrument names unparsed)
+index days: 844, surface days: 835
+SOL empirical half-spread (median |price-mark|/mark, ATM 20-40d): 1.31% (n=32,638; BTC tape was 0.61%)
+ATM-band entry liquidity: 37 trades/day median
+runs in tape window: 53 (long=20, short=33)
+
+option-entry-skipped runs: long=6, short=8
+
+=== Tracks and hybrids (0=spot, 1=opt-delta, 2=opt-budget) ===
+SPOT/SPOT    total=    +209,225  ann=  +9.0%  sharpe=  0.37  maxDD= -35.7%  DSR= 70.7%
+OPTD/OPTD    total=     +49,935  ann=  +2.3%  sharpe=  0.30  maxDD= -35.8%  DSR= 66.9%
+OPTB/OPTB    total=    +158,548  ann=  +7.2%  sharpe=  0.42  maxDD= -22.1%  DSR= 73.0%
+H1 S/OB      total=    +262,160  ann= +11.7%  sharpe=  0.54  maxDD= -21.7%  DSR= 78.5%
+H2 OD/OB     total=    +101,945  ann=  +4.7%  sharpe=  0.32  maxDD= -32.2%  DSR= 68.0%
+H3 S/OD      total=    +210,150  ann=  +9.5%  sharpe=  0.45  maxDD= -26.7%  DSR= 74.6%
+
+--- per-run P&L by duration bucket ---
+            spot       opt_delta       opt_budget      
+             sum count       sum count        sum count
+bucket                                                 
+<8d    -419096.0    19 -426718.0    19  -242255.0    19
+8-30d  -114234.0    21 -402130.0    21  -227076.0    21
+>30d    742556.0     6  878782.0     6   627879.0     6
+
+--- by direction ---
+         spot  opt_delta  opt_budget
+dir                                 
+-1    30381.0    31305.0     83316.0
+ 1   178845.0    18630.0     75232.0
+
+=== Stress: 2x half-spread ===
+OPTD/OPTD*   total=     -11,775  ann=  -0.6%  sharpe=  0.24  maxDD= -38.7%  DSR= 63.8%
+OPTB/OPTB*   total=    +120,868  ann=  +5.6%  sharpe=  0.36  maxDD= -23.4%  DSR= 70.0%
+H1 S/OB*     total=    +237,730  ann= +10.7%  sharpe=  0.51  maxDD= -21.9%  DSR= 77.1%
+H3 S/OD*     total=    +170,295  ann=  +7.8%  sharpe=  0.41  maxDD= -27.2%  DSR= 72.8%

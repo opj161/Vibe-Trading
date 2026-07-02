@@ -1,0 +1,6 @@
+loaded 23,845,156 trades
+daily_index.csv: 3,480 days, 2016-11-29 00:00:00+00:00 -> 2026-07-02 00:00:00+00:00
+parsed 89,745 unique instruments (0 unparsed, dropped)
+atm_iv_30d.csv: 2,492 days with >=1 qualifying trade
+  coverage: 2017-02-21 00:00:00+00:00 -> 2026-06-06 00:00:00+00:00, median n_trades/day = 215
+term_structure.csv: 13,053 rows across 5 DTE buckets
