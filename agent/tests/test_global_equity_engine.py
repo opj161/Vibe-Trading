@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from backtest.engines.global_equity import GlobalEquityEngine
+from backtest.models import Position
 
 
 # ---------------------------------------------------------------------------
@@ -173,3 +174,70 @@ class TestMarketParam:
     def test_hk_market(self) -> None:
         engine = GlobalEquityEngine({"initial_cash": 100_000}, market="hk")
         assert engine.market == "hk"
+
+
+# ---------------------------------------------------------------------------
+# Short-borrow fee accrual (on_bar)
+# ---------------------------------------------------------------------------
+
+
+def _open_position(engine: GlobalEquityEngine, symbol: str, direction: int, size: float = 100.0) -> None:
+    engine.positions[symbol] = Position(
+        symbol=symbol,
+        direction=direction,
+        entry_price=100.0,
+        entry_time=pd.Timestamp("2024-01-01"),
+        size=size,
+    )
+
+
+class TestShortBorrowFee:
+    def test_default_rate_is_zero_no_op(self) -> None:
+        """Default (unconfigured) behavior must be byte-identical to before
+        this feature existed — no capital drain on any position."""
+        engine = _us_engine()
+        _open_position(engine, "AAPL.US", direction=-1)
+        capital_before = engine.capital
+
+        engine.on_bar("AAPL.US", _make_bar(100.0), pd.Timestamp("2024-01-02"))
+
+        assert engine.capital == capital_before
+
+    def test_long_position_never_charged(self) -> None:
+        engine = _us_engine(short_borrow_annual_rate=0.05)
+        _open_position(engine, "AAPL.US", direction=1)
+        capital_before = engine.capital
+
+        engine.on_bar("AAPL.US", _make_bar(100.0), pd.Timestamp("2024-01-02"))
+
+        assert engine.capital == capital_before
+
+    def test_short_position_charged_daily_pro_rata(self) -> None:
+        engine = _us_engine(short_borrow_annual_rate=0.0365)  # 3.65%/yr -> 0.01%/day
+        _open_position(engine, "AAPL.US", direction=-1, size=100.0)
+        capital_before = engine.capital
+
+        engine.on_bar("AAPL.US", _make_bar(100.0), pd.Timestamp("2024-01-02"))
+
+        expected_fee = 100.0 * 100.0 * (0.0365 / 365.0)  # size * price * daily_rate
+        assert capital_before - engine.capital == pytest.approx(expected_fee)
+
+    def test_no_open_position_no_charge(self) -> None:
+        engine = _us_engine(short_borrow_annual_rate=0.05)
+        capital_before = engine.capital
+
+        engine.on_bar("AAPL.US", _make_bar(100.0), pd.Timestamp("2024-01-02"))
+
+        assert engine.capital == capital_before
+
+    def test_fee_scales_with_mark_price_not_entry_price(self) -> None:
+        """Accrual must use the current bar's mark price (real economic
+        cost of the borrow today), not the stale entry price."""
+        engine = _us_engine(short_borrow_annual_rate=0.0365)
+        _open_position(engine, "AAPL.US", direction=-1, size=100.0)  # entry_price=100.0
+        capital_before = engine.capital
+
+        engine.on_bar("AAPL.US", _make_bar(200.0), pd.Timestamp("2024-01-02"))
+
+        expected_fee = 100.0 * 200.0 * (0.0365 / 365.0)
+        assert capital_before - engine.capital == pytest.approx(expected_fee)

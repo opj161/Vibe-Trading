@@ -249,6 +249,51 @@ def _maybe_enrich_events(
         ) from exc
 
 
+def volume_scaled_slippage_rate(
+    base_rate: float,
+    trade_notional: float,
+    bar_dollar_volume: float,
+    impact_coefficient: float = 0.1,
+    max_multiplier: float = 5.0,
+) -> float:
+    """Scale a flat slippage rate by trade size relative to bar liquidity.
+
+    Every engine's default ``apply_slippage`` uses a flat, size-independent
+    rate regardless of instrument liquidity or trade notional — a
+    reasonable approximation for the large-cap/major-pair universes this
+    platform's validated strategies actually trade, but one that would
+    understate real costs for smaller/less liquid instruments (broader
+    crypto universes, small/mid-cap equities). This is an opt-in utility a
+    custom engine or signal-engine author can call from their own
+    ``apply_slippage`` override (which has access to the current bar's
+    volume) — it is not wired into any engine's default execution path,
+    since none of this platform's currently-validated strategies trade
+    instruments illiquid enough to need it, and forcing the change through
+    every engine's ``apply_slippage`` signature is not worth the risk for a
+    capability nothing active currently exercises.
+
+    Args:
+        base_rate: The flat slippage rate that would otherwise be used
+            (e.g. ``self.slippage_rate``).
+        trade_notional: Dollar (or equivalent) size of the trade being priced.
+        bar_dollar_volume: The bar's dollar volume (``close * volume`` is a
+            reasonable proxy when a true dollar-volume field isn't available).
+        impact_coefficient: How strongly participation rate scales slippage;
+            0.1 means a trade equal to 100% of bar volume doubles the rate.
+        max_multiplier: Hard cap on the scaling factor, so a near-zero-volume
+            bar can't blow up the effective rate to something absurd.
+
+    Returns:
+        The scaled slippage rate. Falls back to ``base_rate`` unscaled when
+        ``bar_dollar_volume`` is non-positive (no volume data available).
+    """
+    if bar_dollar_volume <= 0:
+        return base_rate
+    participation = trade_notional / bar_dollar_volume
+    multiplier = min(1.0 + impact_coefficient * participation, max_multiplier)
+    return base_rate * multiplier
+
+
 # ─── Base Engine ───
 
 

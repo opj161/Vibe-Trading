@@ -30,6 +30,16 @@ class GlobalEquityEngine(BaseEngine):
       - hk_commission: default 0.00015 (万1.5)
       - hk_levy: default 0.0000565 (SFC + FRC)
       - hk_settlement: default 0.00002 (CCASS)
+      - short_borrow_annual_rate: default 0.0 (opt-in). Daily-accrued fee on
+        open short positions' notional, modeling real-world stock-loan/
+        margin-interest cost. Previously undocumented as an actual gap:
+        every prior long/short US/HK equity backtest on this platform
+        costlessly shorted, unlike the crypto engine's funding-fee and
+        margin/liquidation modeling. Default 0.0 preserves prior behavior
+        exactly; set e.g. 0.003-0.01 (0.3%-1%/yr, easy-to-borrow large-cap
+        range) for a realistic long/short backtest. Hard-to-borrow/crowded
+        shorts can run far higher — this is a flat approximation, not a
+        per-symbol locate-fee model.
     """
 
     def __init__(self, config: dict, market: str = "us"):
@@ -45,6 +55,7 @@ class GlobalEquityEngine(BaseEngine):
         self.hk_commission: float = config.get("hk_commission", 0.00015)
         self.hk_levy: float = config.get("hk_levy", 0.0000565)
         self.hk_settlement: float = config.get("hk_settlement", 0.00002)
+        self.short_borrow_annual_rate: float = config.get("short_borrow_annual_rate", 0.0)
 
     def can_execute(self, symbol: str, direction: int, bar: pd.Series) -> bool:
         """US/HK: T+0, both directions allowed."""
@@ -76,3 +87,20 @@ class GlobalEquityEngine(BaseEngine):
         """US: low slippage. HK: moderate slippage."""
         rate = self.slippage_hk if self.market == "hk" else self.slippage_us
         return price * (1 + direction * rate)
+
+    def on_bar(self, symbol: str, bar: pd.Series, timestamp: pd.Timestamp) -> None:
+        """Daily short-borrow fee accrual on any open short position.
+
+        Opt-in (``short_borrow_annual_rate`` defaults to 0.0, so this is a
+        no-op unless explicitly configured) — mirrors the crypto engine's
+        per-bar funding-fee hook, applied to the same daily-accrual pattern
+        for the equity-shorting-cost analog.
+        """
+        if self.short_borrow_annual_rate <= 0.0:
+            return
+        pos = self.positions.get(symbol)
+        if pos is None or pos.direction >= 0:
+            return
+        mark_price = float(bar.get("close", pos.entry_price))
+        daily_rate = self.short_borrow_annual_rate / 365.0
+        self.capital -= pos.size * mark_price * daily_rate
