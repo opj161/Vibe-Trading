@@ -94,3 +94,6 @@ wiki/alpha-library/content/
 # machine-specific tool state
 .mcp.json
 .serena/
+
+# Repo snapshot archive (for external-agent handoffs) -- never commit
+/Vibe-Trading.zip
