@@ -184,7 +184,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["agent/tests"]
+testpaths = ["agent/tests", "deployment/tests"]
 pythonpath = ["agent"]
 markers = [
     "unit: Unit tests (fast, no network)",

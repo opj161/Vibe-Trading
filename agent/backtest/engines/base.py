@@ -131,10 +131,22 @@ def _align(
     if optimizer is not None:
         pos = optimizer(ret, pos, dates)
 
-    scale = pos.abs().sum(axis=1).clip(lower=1.0)
-    pos = pos.div(scale, axis=0)
+    pos = normalize_gross_exposure(pos)
 
     return dates, close, pos, ret
+
+
+def normalize_gross_exposure(pos: pd.DataFrame) -> pd.DataFrame:
+    """Scale each row down (never up) so per-row gross exposure never exceeds
+    1.0 -- i.e. ``sum(abs(weights))`` stays <= 100% notional. This is the same
+    row-wise clip-and-divide ``_align`` has always applied after the shift/
+    optimizer step; factored out so callers that need "what will actually
+    execute" for a *single* row (e.g. a live deployment signal extracting
+    today's target, which needs this same clip before sizing an order) reuse
+    the exact formula instead of re-deriving it.
+    """
+    scale = pos.abs().sum(axis=1).clip(lower=1.0)
+    return pos.div(scale, axis=0)
 
 
 def _load_optimizer(config: Dict[str, Any]) -> Optional[Callable]:

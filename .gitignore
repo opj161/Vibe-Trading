@@ -25,6 +25,12 @@ learn-claude-code-main/
 agent/sessions/
 agent/runs/
 agent/.ui_runtime/
+# Regenerable daily deployment signal/ticket snapshots (like agent/runs/, not
+# the ledger itself -- live_ledger.csv/equity_snapshots.csv ARE tracked, they
+# are the non-regenerable human-confirmed audit trail).
+deployment/state/signal_state_*.json
+deployment/state/tickets_*.json
+deployment/state/latest.json
 agent/.tasks/
 agent/uploads/
 agent/tests/*_result.json
@@ -97,3 +103,4 @@ wiki/alpha-library/content/
 
 # Repo snapshot archive (for external-agent handoffs) -- never commit
 /Vibe-Trading.zip
+deployment/state/data_fingerprint_*.json
