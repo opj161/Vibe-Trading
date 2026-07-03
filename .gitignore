@@ -104,3 +104,6 @@ wiki/alpha-library/content/
 # Repo snapshot archive (for external-agent handoffs) -- never commit
 /Vibe-Trading.zip
 deployment/state/data_fingerprint_*.json
+
+# VM cron logs pulled back by deploy/pull_state.sh (operational noise, not results)
+deploy/logs/

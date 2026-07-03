@@ -1,0 +1,19 @@
+# Curated runtime deps for the Ubuntu-VM daily-cycle host (deploy/README.md).
+# Deliberately NOT the full pyproject dependency set: the VM only runs
+# deployment/* + agent/backtest/* (engine + okx/yfinance/ccxt loaders) + the
+# Deribit snapshotter. Loader modules for markets the VM never touches
+# (tushare/akshare/baostock/mootdx) fail their import inside the registry's
+# per-module try/except and degrade gracefully. Validated by an actual
+# daily_cycle run on the VM at deploy time -- if a new import creep appears,
+# the validation run is what catches it.
+pandas>=2.0.0,<3.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+pydantic>=2.0.0
+defusedxml>=0.7.1
+httpx>=0.28.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+yfinance>=0.2.30
+ccxt>=4.0.0
+pyarrow>=14.0.0

@@ -3196,3 +3196,60 @@ instrument-expression axis, not a new signal), recorded in `GO_LIVE_CHECKLIST.md
 the forward ledger next to `fwd_M1` so the deployed expression accrues its own append-only
 evidence. Driver: `research/macro_breadth/run_m1_longflat_study.py`;
 results: `m1_longflat_results.json`.
+
+## 85. CPD-1 hardening sprint: the reassessment's defect list closed, the macro-short decision executed as a frozen expression, and the deployment moved to an always-on host
+
+Executed the prioritized backlog from `vibe_trading_cpd1_reassessment_20260703.md` (the post-build
+audit that cross-checked the external `assessment-cpd-1.md` against this repo's real state). All
+code changes live in `deployment/` + `forward_validation/frozen/M1LF/`; full suite green (4665
+agent tests + 231 deployment/research tests; the M1LF/ZD2 signal-parity integration tests pass
+against real data).
+
+### 85.1 Governance action: M1LF adopted as the deployed macro expression (user-delegated)
+
+The user delegated the open go-live decisions ("choose best approach yourself"); per §84.3's
+one-sided engine evidence (M1LF full-window Sharpe 0.92 vs 0.61, maxDD −15.0% vs −19.6%,
+forward-year 1.43 vs 1.16; M1 short legs −$486k over 2005→2026), **option (c) — hold flat on
+macro shorts — is now executed, not just recommended**: `research/macro_breadth/M1LF/
+signal_engine.py` byte-frozen to `forward_validation/frozen/M1LF/` (sha
+f4a23327c36b2432…, config byte-identical to M1's), first `fwd_M1LF` row appended to the forward
+ledger (2026-07-03), and the new `deployment/profiles.py` declares the deployed book as
+**cpd1_lf = 30% ZA4 + 70% M1LF @1x, ZD2 shadow**. Framing discipline unchanged from §84.3: this
+is a deployment-*expression* decision on a forced choice (§81/§82's instrument-expression axis),
+not a signal promotion — full M1 stays the frozen research reference with its own quarterly row.
+
+### 85.2 The five tracking-report defects fixed (each with a regression test)
+
+`deployment/tracking_report.py` rewritten: (1) fills windowed to the report period; (2)
+paper/live ledger rows never mix (`ledger.confirmed_fills(paper=…, since_date=…)`); (3)
+denominator is the anchor-date equity snapshot, not the latest; (4) composite return is
+profile-weighted (30/70), not an unweighted strategy mean; (5) the macro reference curve is the
+deployed expression's (`deploy_M1LF_*`), not full M1's. The live side reuses a new
+`deployment/marking.py` (anchor + windowed signed cash flows + public marks, exact when no
+position predates the anchor, flagged when one does).
+
+### 85.3 ZD2 is now expressible (the silent arbitration-rigging fixed)
+
+§80.3 left "ZD2 vs ZA4" to forward arbitration, but the ticket layer only fired on direction
+changes — ZD2's `one_shot_resize` (short qty ×2 at 10 held bars) could never reach a ticket, so a
+ZD2 win would have been undeployable. `order_tickets.resize_tickets()` now mirrors
+`base.py::_maybe_one_shot_resize` semantics off the ledger (entry streak via
+`ledger.position_entry_info`, once per lifetime, direction-filtered), and ZD2 runs daily as the
+profile's shadow strategy so its paper curve accrues alongside ZA4's.
+
+### 85.4 Operational closure: one command, always-on host, auto-paper
+
+New `deployment/daily_cycle.py` (signals → tickets → auto-paper fills → funding re-check on OPEN
+perp shorts → sleeve marking (`equity_marks.csv`, the daily series the drawdown/single-day-loss
+tripwires previously lacked between weekly manual snapshots) → risk checks incl. the
+previously-unimplemented >5pp sleeve-drift rule → Telegram summary; idempotent per day;
+hard-errors on unconfigured sleeve equity instead of silently sizing tickets off $0).
+**Design decision recorded**: paper fills are auto-recorded (`--auto-paper`, observed reference
+price + modeled taker fee, REVIEW tickets auto-SKIPPED with an alert, never auto-executed) —
+CPD-1 §B framed paper mode as a human ritual, but the thing the go-live gate actually validates
+("zero missed daily runs") is the *scheduled pipeline*, and the human process gets its own
+50%-size live shakedown in Phase 4 regardless. Scheduling moved off WSL2 (cron dies with the
+Windows host) to the always-on Ubuntu-VM — see `deploy/` and `deployment/README.md`. Also:
+`pyarrow` declared, `nautilus_trader` made an optional `[nautilus]` extra with a clean test skip
+(the external assessment's "dependency failures" were its own sandbox, but the declarations were
+genuinely missing).
