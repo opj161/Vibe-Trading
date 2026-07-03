@@ -168,3 +168,25 @@ class TestSafeRunId:
 
         with pytest.raises(ValueError, match="was not found"):
             safe_run_id("missing_run")
+
+
+class TestRunRootsWithoutSwarmStack:
+    """A pure-backtest environment (deployment VM's curated venv) lacks the
+    optional swarm/MCP dependency stack; safe_run_dir must still work with
+    the swarm runs root simply absent (regression: 2026-07-03 VM validation
+    run failed with ModuleNotFoundError: fastmcp via src.swarm.__init__)."""
+
+    def test_safe_run_dir_survives_missing_swarm_dependencies(self, tmp_path: Path, monkeypatch):
+        import sys
+
+        # Setting the module entry to None makes `from src.swarm.store
+        # import ...` raise ImportError, exactly like the missing optional
+        # dependency chain does on the VM.
+        monkeypatch.setitem(sys.modules, "src.swarm.store", None)
+        monkeypatch.setenv("VIBE_TRADING_ALLOWED_RUN_ROOTS", str(tmp_path))
+        run_dir = tmp_path / "deploy_ZA4_20260703"
+        run_dir.mkdir()
+
+        result = safe_run_dir(str(run_dir))
+
+        assert result == run_dir.resolve()

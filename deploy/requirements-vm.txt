@@ -7,6 +7,8 @@
 # daily_cycle run on the VM at deploy time -- if a new import creep appears,
 # the validation run is what catches it.
 pandas>=2.0.0,<3.0.0
+# backtest/runner.py -> src.tools.path_utils -> src.swarm.presets imports yaml
+pyyaml>=6.0.0
 numpy>=1.24.0
 scipy>=1.10.0
 pydantic>=2.0.0

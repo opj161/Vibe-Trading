@@ -38,6 +38,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -187,9 +188,18 @@ def _run_audit_trail(strategy: str, as_of: str) -> Path:
     (run_dir / "config.json").write_text(json.dumps(config, indent=2))
     shutil.copy(frozen / "signal_engine.py", run_dir / "code" / "signal_engine.py")
 
+    # PYTHONPATH must carry agent/ explicitly: `python backtest/runner.py`
+    # puts agent/backtest (the script dir), not agent/, on sys.path, so
+    # `import backtest` only resolves where the project is pip-installed
+    # (true on the dev machine's editable install, false on the VM's curated
+    # runtime venv -- found by the first real VM validation run).
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(AGENT_DIR) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
     proc = subprocess.run(
         [sys.executable, "backtest/runner.py", str(run_dir)],
-        cwd=AGENT_DIR, capture_output=True, text=True, timeout=1800,
+        cwd=AGENT_DIR, capture_output=True, text=True, timeout=1800, env=env,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"{strategy}: runner failed\n{proc.stderr[-2000:]}")
