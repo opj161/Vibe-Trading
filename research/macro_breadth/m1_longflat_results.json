@@ -1,0 +1,34 @@
+{
+  "M1": {
+    "run_dir": "/home/j_opp/projects/Vibe-Trading/agent/runs/v_M1X_study_M1_full",
+    "full": {
+      "n_days": 5408,
+      "ann_return_pct": 6.39,
+      "sharpe": 0.609,
+      "max_dd_pct": -19.6
+    },
+    "forward_only": {
+      "n_days": 253,
+      "ann_return_pct": 7.36,
+      "sharpe": 1.1645,
+      "max_dd_pct": -6.76
+    },
+    "note": "verified-clean data draw (audit 2026-07-03; see findings \u00a784)"
+  },
+  "M1LF": {
+    "run_dir": "/home/j_opp/projects/Vibe-Trading/agent/runs/v_M1X_study_M1LF_full",
+    "full": {
+      "n_days": 5408,
+      "ann_return_pct": 7.67,
+      "sharpe": 0.9164,
+      "max_dd_pct": -15.03
+    },
+    "forward_only": {
+      "n_days": 253,
+      "ann_return_pct": 8.73,
+      "sharpe": 1.431,
+      "max_dd_pct": -4.94
+    },
+    "note": "verified-clean data draw (audit 2026-07-03; see findings \u00a784)"
+  }
+}

@@ -3083,3 +3083,116 @@ a measured, stress-robust cost. Forward-track by re-running phase 5 quarterly al
 `CURRENCY=USDC INSTRUMENT_PREFIX=SOL_USDC python -m deribit_fetcher.option`). Engine-level
 options execution remains the build decision it was in §81.5 — now backed by two independent
 expression studies instead of one.
+
+## 83. CPD-1 Phase D: macro-sleeve breadth (pre-registered, clean negative)
+
+Executed the one research item `vibe_trading_deployment_plan_CPD1.md` §D pre-registers as part of
+building out the deployment layer (`deployment/`, this session — see `deployment/README.md` for
+the full ops-layer build). Binding pre-registration, quoted from the plan: exactly two variants
+against the M1 control — **M1X-a** (SPY+GLD+TLT) and **M1X-b** (SPY+GLD+TLT+DBC, DBC = Invesco DB
+Commodity Index Tracking Fund, the commodity proxy) — same engine, same frozen M1 hyperparameters
+(no re-tuning), full 2005→present window, DSR with n_trials=3; promote only if Sharpe improves
+≥0.1 AND maxDD does not worsen ≥2pp on the full window; 2025-07→2026-06 is a consistency check
+only, not for selection. `research/macro_breadth/run_m1x_study.py` is the committed, regenerable
+driver; M1X-a/M1X-b's `signal_engine.py` are byte-identical copies of the frozen M1 engine
+(verified via `diff` at build time — M1's ERC/vol-target loop is already symbol-count-agnostic,
+same discipline as §77's ZA4B freeze) — only `config.json`'s `codes` list widens.
+
+### 83.1 Result: both variants lose decisively on Sharpe — not promoted
+
+| Variant | Full-window Sharpe | Full-window maxDD | Sharpe Δ vs M1 | maxDD Δ vs M1 | DSR (n_trials=3) | Promote? |
+|---|---:|---:|---:|---:|---:|---|
+| M1 (control) | 0.614 | −19.6% | — | — | — | — |
+| M1X-a (+TLT) | 0.439 | −11.8% | **−0.174** | +7.8pp (better) | 0.948 | **No** |
+| M1X-b (+TLT+DBC) | 0.439 | −6.9% | **−0.175** | +12.7pp (better) | 0.947 | **No** |
+
+(Full window 2005-01-01→2026-07-03, 5408 daily bars; forward-only 2025-07→2026-06 consistency
+check showed the same ranking — M1 Sharpe 1.16 vs M1X-a/b 0.46/0.94 — confirming this isn't a
+full-window-only artifact.) Both widened variants cut maxDD substantially (bonds/commodities
+genuinely diversify the tail), but the Sharpe drop is an order of magnitude larger than the
+promotion threshold requires improving *in the other direction* — the decision rule's Sharpe leg
+fails decisively regardless of the (irrelevant, since Sharpe already disqualifies) maxDD leg.
+DSR ~0.95 for both just says "this observed Sharpe is reliably non-zero," not "reliably better
+than control" — the comparison that matters is the direct Sharpe delta, which is unambiguous.
+
+### 83.2 Why: the same ERC-dilution mechanism CLAUDE.md already documents once, now confirmed a second time
+
+TLT/DBC's lower realized volatility pulls disproportionate equal-risk-contribution weight away
+from SPY/GLD's trend signal — the identical mechanism §50's platform-level finding already
+named ("naive risk-parity allocation systematically pulls weight toward the lower-quality-but-
+lower-vol asset," there for a crypto+macro combined book, here for macro-only). M1's own AQR-
+blend already sizes each leg by *its own* vol-target before the ERC step (`VOL_LOOKBACK=60`,
+`TARGET_DAILY_VOL=0.010` in `signal_engine.py`), which should partially resist this — evidently
+not enough to survive adding two lower-vol, weaker-trend legs into the same equal-risk book.
+
+### 83.3 Disposition (binding per the pre-registration)
+
+**M1 stays the deployed macro sleeve.** No re-tuning attempted (the pre-registration is binding
+either way) — this is a clean, recorded negative, not a partial win requiring a follow-up grid.
+If macro breadth is revisited later, the mechanism above suggests the fix is architectural (a
+sleeve-level, not per-asset, allocation step — exactly what §50.1 already had to build for the
+crypto+macro composite) rather than a parameter retune of the existing per-asset ERC loop; that
+would be a new design (new frozen name), not an M1X iteration. Per CPD-1 §D's own text: "Whatever
+the outcome: the deployed sleeve stays M1 until a promoted variant has ≥1 quarter of forward-
+ledger evidence. No exceptions" — moot here since nothing was promoted.
+
+## 84. CPD-1 deployment-layer audit: a live-relevant data-flakiness failure mode discovered and gated, §83 re-verified, and the macro-short expression question answered with engine evidence
+
+Full audit of the CPD-1 deployment-layer build (findings §83 / `deployment/` — signal runner,
+tickets, ledger, alerts, risk rules, snapshotter, HL testnet drill). Verified genuine: the
+signal-parity gate design (raw-signal-vs-shifted-positions.csv, 30 days, both strategies), the
+entry-locked ticket semantics, the ledger's venue-scoped position accounting, the
+`normalize_gross_exposure` extraction (byte-equivalent refactor of `_align`'s clip, full
+4,679-test suite green), the live-verified HL testnet drill (endpoint hardcoded testnet-only),
+and the snapshotter (2,194 real rows on day one). Two defects found and fixed: a macro
+long→short flip emitted only the REVIEW ticket and silently stranded the existing long open
+(close ticket now always emitted; regression test); `H1_overlay/RULE.md` described entry
+selection as "nearest" ATM — repeating the exact mischaracterization the Nautilus parity project
+corrected (it is **earliest-eligible**; fixed, with the correct function name).
+
+### 84.1 The discovery that matters for live deployment: silently degraded fetch draws
+
+While validating a deployment-expression question (§84.3), three same-day runs of the
+byte-identical frozen M1 config returned full-window Sharpe **{0.6135, 0.4399, 0.609}** and
+maxDD **{−19.6%, −34.6%, −19.6%}**. The middle draw's fetch delivered silently degraded data:
+its non-NaN closes still matched a weeks-old reference to ~1e-6 on every spot-checked bar, yet
+its 21-year flip-date history warped (618 vs 656 trades, entries shifted by a day, extra
+whipsaw round-trips). A 20-seed ±1e-6 random-noise perturbation study on the frozen M1 engine
+moved a **median of zero** sign-days — so this is NOT knife-edge float sensitivity; it is a
+discretely bad data draw (most plausibly NaN/degraded rows, which pandas propagates silently
+through the close-only EMA/SMA/sign chain and which value-comparison over the common index
+cannot see; unprovable retroactively because the run dir was overwritten before diagnosis).
+**A live daily signal run that catches such a draw would emit confidently wrong tickets.**
+Fixes: `deployment/data_integrity.py` — a hard gate before any signal generation (NaN closes,
+minimum history, and a day-over-day history-mutation fingerprint that allows uniform rescaling
+(legitimate dividend re-adjustment) but fails non-uniform per-bar rewrites), wired into
+`signal_runner` (failure ⇒ Telegram alert, nonzero exit, no state written, previous day's
+`latest.json` preserved per-strategy so flip detection survives partial failures; 8 new tests);
+plus the same NaN guard in `research/macro_breadth/run_m1x_study.py::run_variant` so quarterly
+reruns are protected.
+
+### 84.2 §83 re-verified on verified-clean draws: conclusion unchanged, one number corrected
+
+M1X_b reproduced byte-identically (0.4386/−6.88 — its original draw was clean). M1X_a on a
+clean draw is **0.4722/−9.25** (recorded: 0.4391/−11.84 — its original run likely caught minor
+bad data). Both still fail the pre-registered promotion rule decisively (Sharpe −0.14/−0.17 vs
+the +0.10 bar); §83's verdict stands. M1 control on clean draws: 0.609-0.6135/−19.6%,
+consistent with the frozen reference (0.616/−19.6%).
+
+### 84.3 Macro-short expression (the go-live REVIEW question), answered with engine evidence
+
+M1 is short GLD 27% / SPY 17% of days, and the go-live checklist correctly flags that CPD-1
+never specified how a retail IBKR-UCITS account should express those shorts. Engine evidence,
+all on verified-clean draws: (a) M1's own trades ledger attributes **−$486k to its short legs**
+over 2005→2026 (GLD −$333k/72 trades, SPY −$153k/68) — the sleeve's entire edge is long-side;
+(b) a faithful long/flat expression (M1LF: normalize the full signed book with the gross clip
+FIRST, then zero negatives — exactly what skipping short tickets does in deployment; transform
+order matters and is documented in `research/macro_breadth/M1LF/signal_engine.py`) beats full
+M1 on every metric: **full-window Sharpe 0.92 vs 0.61, maxDD −15.0% vs −19.6%, forward-year
+Sharpe 1.43 vs 1.16**. Governance: M1LF is NOT promoted and M1 remains the frozen reference —
+this is deployment-expression decision support for a forced choice (like §81/§82's
+instrument-expression axis, not a new signal), recorded in `GO_LIVE_CHECKLIST.md` with option
+(c) (hold flat on macro shorts) as the data-recommended default; if chosen, `fwd_M1LF` joins
+the forward ledger next to `fwd_M1` so the deployed expression accrues its own append-only
+evidence. Driver: `research/macro_breadth/run_m1_longflat_study.py`;
+results: `m1_longflat_results.json`.
