@@ -10,86 +10,90 @@ docstring for why it's the one authorized exception).
 ## What's deployed
 
 ```
-CPD-1 = 30% crypto sleeve (frozen ZA4: BTC-USDT + SOL-USDT, daily)
-      + 70% macro sleeve  (frozen M1: SPY+GLD AQR blend, monthly)
-      @ 1.0x leverage
+cpd1_lf (deployment/profiles.py, the active profile — findings §85):
+    30% crypto sleeve (frozen ZA4: BTC-USDT + SOL-USDT, daily)
+  + 70% macro sleeve  (frozen M1LF: SPY+GLD AQR blend, LONG/FLAT expression)
+    @ 1.0x leverage
+  + ZD2 shadow (daily signals + paper curve only, never tickets — feeds the
+    ZA4-vs-ZD2 forward arbitration, findings §80.3)
 ```
 
-Frozen source: `forward_validation/frozen/{ZA4,M1}/`. **Never edited by
-anything in `deployment/`** — `signal_runner.py` only *reads* those files.
+**Macro short expression is DECIDED (2026-07-03, findings §84.3/§85):
+option (c), hold flat.** M1LF is the frozen long/flat expression of the M1
+signal (byte-frozen at `forward_validation/frozen/M1LF/`, forward-tracked as
+`fwd_M1LF`); full M1 stays the frozen research reference and keeps its own
+quarterly ledger row. The engine evidence was one-sided: M1's short legs lost
+$486k over 2005→2026, and M1LF beats M1 on every metric (Sharpe 0.92 vs 0.61,
+maxDD −15.0% vs −19.6%, forward-year 1.43 vs 1.16).
+
+Frozen source: `forward_validation/frozen/{ZA4,M1LF,ZD2,M1}/`. **Never edited
+by anything in `deployment/`** — `signal_runner.py` only *reads* those files.
 
 ## Module map
 
 | Module | Purpose |
 |---|---|
-| `signal_runner.py` | Daily: fetch data, run the frozen engines, extract today's raw (pre-shift) target per symbol. Writes `state/signal_state_<date>.json` + `state/latest.json`. |
-| `order_tickets.py` | Turn a SignalState into human-readable BUY/SELL/SKIP/REVIEW tickets, sized against sleeve equity, quantized against live venue minimums. |
-| `ledger.py` / `confirm.py` | Append-only fill/skip record (`state/live_ledger.csv`) + the `python -m deployment.confirm` CLI that writes to it. |
-| `tracking_report.py` | Weekly: live ledger P&L vs. the frozen engine's own paper equity curve — the single most important QC check this layer has. |
-| `risk_rules.py` | Pre-registered drawdown/single-day-loss/missed-run/reconciliation tripwires, pure functions over ledger state. |
-| `alerts.py` | Telegram push (edgeforge's bot, reused with permission) for everything `risk_rules.py`/`order_tickets.py` flags. |
-| `venue_specs.py` | Live Binance quantization/price/funding lookups with hardcoded fallback constants. |
-| `tickets.py` | Shared `Ticket` schema so `order_tickets.py` (writer) and `confirm.py` (reader) never drift on format. |
-| `hl_testnet_drill.py` | Phase E: Hyperliquid testnet order-lifecycle smoke drill (see its own docstring). |
+| `profiles.py` | THE single statement of what is deployed: strategy → sleeve/weight map + shadow list. Active profile: `cpd1_lf`. |
+| `daily_cycle.py` | **The one command per day**: signals → tickets → (auto-paper fills) → funding re-check on open shorts → sleeve marking → risk checks → Telegram summary. |
+| `signal_runner.py` | Fetch data, run the frozen engines behind the data-integrity gate, extract today's raw (pre-shift) target per symbol. Writes `state/signal_state_<date>.json` + `state/latest.json`. |
+| `order_tickets.py` | SignalState → BUY/SELL/SKIP/REVIEW tickets (CLI: `python -m deployment.order_tickets`), sized against sleeve equity (hard error when unconfigured), quantized against live venue minimums; also `one_shot_resize` tickets so ZD2 is expressible. |
+| `ledger.py` / `confirm.py` | Append-only fill/skip record (`state/live_ledger.csv`, paper/live rows tagged) + the `python -m deployment.confirm` CLI that writes to it. |
+| `marking.py` | Sleeve valuation (anchor snapshot + windowed cash flows + public marks) and the daily `state/equity_marks.csv` risk series. |
+| `tracking_report.py` | Weekly: mode-filtered, window-anchored, profile-weighted live-vs-paper divergence — the single most important QC check this layer has (rewritten 2026-07-03; see its docstring for the five defects fixed). |
+| `risk_rules.py` | Pre-registered drawdown/single-day-loss/missed-run/reconciliation/sleeve-drift tripwires over the marked equity series. |
+| `alerts.py` | Telegram push (edgeforge's bot, reused with permission) for everything the cycle flags. |
+| `venue_specs.py` | Live Binance quantization/price/funding lookups with hardcoded fallback constants + modeled paper fee rates. |
+| `tickets.py` | Shared `Ticket` schema so writers and readers never drift on format. |
+| `hl_testnet_drill.py` | Phase E: Hyperliquid testnet order-lifecycle smoke drill (needs the optional `[nautilus]` extra). |
 
 ## Daily loop
 
-1. **After the crypto daily bar close** (OKX-style 16:00 UTC boundary — the
-   frozen ZA4 config's actual source; verify this hasn't drifted if the
-   config ever changes), run:
-   ```bash
-   python -m deployment.signal_runner
-   ```
-   This runs both ZA4 (daily) and M1 (monthly signal, run daily anyway —
-   cheap, no scheduling special case) and writes `state/signal_state_<date>.json`.
-   Check the `stale`/`effective_as_of` fields per strategy — a stale signal
-   (>4 calendar days behind the request date) means the loader didn't get
-   fresh data; investigate before trusting the tickets built from it.
-2. Build tickets:
-   ```python
-   import json
-   from deployment.order_tickets import build_tickets
-   from deployment.tickets import write_tickets
-   state = json.loads(open("deployment/state/latest.json").read())
-   tickets = build_tickets(state)  # sleeve equity defaults to the ledger's latest snapshot
-   write_tickets(state["as_of_date"], tickets)
-   for t in tickets:
-       print(t.human_text)
-   ```
-3. For each ticket, place the real order (or the paper-mode equivalent —
-   see `GO_LIVE_CHECKLIST.md`), then:
-   ```bash
-   python -m deployment.confirm <ticket-id> --px <fill price> --qty <filled qty> --fee <fee>
-   # or, if the ticket said SKIP / you chose not to act on a REVIEW ticket:
-   python -m deployment.confirm <ticket-id> --skip --reason "..."
-   ```
-   `confirm.py` prints a `row_id` — note it if you ever need to correct this
-   specific entry later (`--supersedes <that-row-id>` on a future call;
-   nothing is ever edited in place).
-4. `risk_rules.run_risk_checks(state)` runs automatically as part of a
-   complete daily cycle (wire it into whatever cron/`/schedule` invocation
-   you set up — not yet wired into `signal_runner.py`'s own `main()`,
-   deliberately: keeps signal generation and risk alerting independently
-   testable/callable). Alerts push to Telegram; everything also stays in the
-   ledger regardless of whether Telegram is reachable.
+One command, scheduled shortly **after the crypto daily bar close** (OKX-style
+16:00 UTC boundary — the frozen ZA4 config's actual source; `daily_cycle`
+warns if run earlier):
+
+```bash
+python -m deployment.daily_cycle --auto-paper        # paper mode (Phase B)
+python -m deployment.daily_cycle --mode live         # after go-live: tickets only, human places orders
+```
+
+Paper mode with `--auto-paper` records every pending ticket as a hypothetical
+fill at the observed reference price + the modeled taker fee
+(`venue_specs.PAPER_FEE_RATES`), idempotently (a rerun cannot double-fill).
+REVIEW tickets are auto-SKIPPED with a Telegram alert — never auto-executed.
+In live mode the human places each order and confirms it:
+
+```bash
+python -m deployment.confirm <ticket-id> --px <fill price> --qty <filled qty> --fee <fee>
+# or, for a SKIP / a REVIEW ticket you chose not to act on:
+python -m deployment.confirm <ticket-id> --skip --reason "..."
+```
+
+`confirm.py` prints a `row_id` — note it if you ever need to correct this
+specific entry later (`--supersedes <that-row-id>` on a future call; nothing
+is ever edited in place). Tickets can also be (re)built standalone:
+`python -m deployment.order_tickets [--crypto-equity N --macro-equity N]`.
 
 ## Weekly
 
-- Record an equity snapshot per venue:
+- Daily sleeve marking is automatic (`daily_cycle` step 5 →
+  `state/equity_marks.csv`); the weekly HUMAN snapshot remains the
+  reconciliation truth (in live mode, from real venue balances; in paper
+  mode the seed row is enough):
   ```python
   from deployment.ledger import append_equity_snapshot
   append_equity_snapshot(date="2026-07-10", venue="binance_spot", symbol_or_cash="cash", balance_usd=...)
   append_equity_snapshot(date="2026-07-10", venue="binance_usdtm", symbol_or_cash="cash", balance_usd=...)
   append_equity_snapshot(date="2026-07-10", venue="ibkr_ucits", symbol_or_cash="cash", balance_usd=...)
   ```
-  (Crypto side is markable from public prices; this isn't automated yet —
-  see "Known gaps" below.)
 - Run the tracking report and act on it (>3% cumulative divergence in a
   quarter → halt new entries, investigate, document before resuming — the
-  pre-registered tolerance):
+  pre-registered tolerance; paper gate is <1%):
   ```python
+  from deployment import ledger, marking
   from deployment.tracking_report import build_report
-  build_report(since_date="<deployment start date>", mark_prices={("BTC-USDT","binance_spot"): <live price>, ...})
+  marks = marking.fetch_mark_prices(ledger.open_positions(paper=True))
+  build_report(since_date="<deployment start date>", mark_prices=marks, paper=True)
   ```
 - Reconcile: confirm venue balances match the ledger within fees.
   `risk_rules.check_reconciliation_due()` reminds you when >=7 days have
@@ -110,7 +114,7 @@ automates the runnable items.
 | Crypto longs (any symbol, either strategy) | Binance spot | Finest granularity; **never perps** — funding-attribution confirmed perp longs pay 10-30%/yr on both Binance and Hyperliquid (`venue_data_assessment_20260703.md` §1) |
 | Crypto shorts | Binance USDT-M perps | Positive carry (BTC +4.1%/yr, SOL small drag) |
 | Macro longs | IBKR, UCITS proxies | PRIIPs blocks US ETFs for EEA retail — see below |
-| Macro shorts | **undecided** | M1 does sometimes signal short (e.g. GLD) — CPD-1 never specified a short-expression venue for macro. `order_tickets.py` surfaces these as REVIEW tickets rather than guessing; see `GO_LIVE_CHECKLIST.md` Phase 2. |
+| Macro shorts | **held flat (decided)** | Option (c) adopted 2026-07-03 (findings §84.3/§85): the deployed M1LF expression zeroes short legs after the gross clip, so no macro short ticket is ever generated under `cpd1_lf`. The REVIEW-ticket path remains in `order_tickets.py` for the legacy `cpd1` (full M1) profile. |
 
 **UCITS proxy mapping** (`order_tickets.py::MACRO_UCITS_CANDIDATES`): the M1
 signal is computed on SPY/GLD data (yfinance) but executed via UCITS
@@ -152,21 +156,25 @@ looks at this," not "the strategy is broken":
 | No equity snapshot in ≥7 days | Reconciliation-due reminder |
 | Tracking-error cumulative divergence >3% of equity in a quarter | Halt-new-entries flag |
 
-## Known gaps (deliberately out of scope this session)
+## Scheduling (Ubuntu-VM)
 
-- **No automated crypto-side equity marking.** The plan allows "crypto side
-  can be marked from public prices automatically" — not built; every equity
-  snapshot is currently a manual `append_equity_snapshot` call.
+The daily cycle runs on the always-on Ubuntu-VM (`~/.ssh/config` host
+`Ubuntu-VM`, repo at `/home/opj/projects/Vibe-Trading`), NOT on the WSL2 dev
+machine — WSL2 cron does not fire while the Windows host sleeps, and the
+go-live gate demands zero missed daily runs. See `deploy/README.md` for the
+rsync-based deploy/bootstrap/cron scripts and the state pull-back flow.
+Cron times (UTC): daily cycle 16:10 (just after the OKX bar close), Deribit
+snapshotter 16:40, weekly tracking report Monday 17:00.
+
+## Known gaps (deliberate)
+
 - **No automated venue-balance reconciliation.** `check_reconciliation_due`
   only reminds on a timer; the actual balance-vs-ledger comparison needs
   live venue APIs this layer doesn't poll (out of scope — no order-placing
   infrastructure beyond the testnet drill, per the plan's hard constraints).
-- **Macro short expression is undecided** (see venue map above) — a real
-  product/regulatory decision for the user, not something to assume.
-- **`risk_rules.run_risk_checks` isn't wired into a scheduler.** Building the
-  actual cron/`/schedule` invocation that runs the daily loop for real is a
-  separate decision — see `GO_LIVE_CHECKLIST.md`; this session built and
-  tested the tooling, not the always-on automation.
+- **Live order placement stays manual** until the Phase E Nautilus
+  target-executor milestone (account ≥ ~$10-25k), and any change to that
+  boundary is a user decision, never an agent default.
 
 ## Testing
 

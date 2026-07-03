@@ -12,20 +12,20 @@ Run the daily loop for real (real signals, real timestamps, no simulated
 data) — this exercises the *process*, not the strategy (already validated in
 `vibe_trading_research_findings.md`/`forward_validation/`).
 
-- [ ] Daily: `python -m deployment.signal_runner` (or the default
-      `--strategies ZA4,M1`), then `python -m deployment.order_tickets`'
-      output reviewed, then for each ticket:
-      `python -m deployment.confirm <ticket-id> --paper --px <observed price> --qty <qty> --fee <modeled fee>`
-      (fee = the venue's modeled taker rate on the observed notional — see
-      `deployment/README.md`'s cost table) — or `--skip --reason ...` if a
-      ticket says SKIP.
-- [ ] Weekly: enter an `equity_snapshots` row via
-      `deployment.ledger.append_equity_snapshot(...)` (or a small wrapper —
-      not yet built; direct Python call is fine for paper mode) using
-      observed public prices for the crypto sleeve and a notional starting
-      balance for the macro sleeve (no real IBKR account yet).
-- [ ] Weekly: run `deployment/tracking_report.py::build_report(...)` and
-      confirm divergence stays near zero (paper fills should track the
+- [ ] One-time: seed the paper equity snapshots at the intended capital
+      split (e.g. $2,500 at 30/70 → crypto $750, macro $1,750) via
+      `ledger.append_equity_snapshot(...)` — the daily cycle hard-errors
+      (exit 3) until this is done, by design.
+- [ ] Daily (scheduled on the Ubuntu-VM, 16:10 UTC — see `deploy/README.md`):
+      `python -m deployment.daily_cycle --auto-paper`. This runs signals for
+      ZA4+M1LF (+ZD2 shadow), builds tickets, records hypothetical paper
+      fills at observed prices + modeled taker fees, re-checks funding on
+      open shorts, marks both sleeves, runs risk checks, and pushes the
+      Telegram summary. REVIEW tickets are auto-skipped and alerted — decide
+      them manually with `python -m deployment.confirm` if you disagree.
+- [ ] Weekly: run `tracking_report.build_report(since_date=<paper start>,
+      mark_prices=..., paper=True)` (see `deployment/README.md` "Weekly")
+      and confirm divergence stays near zero (paper fills should track the
       engine closely by construction — a real divergence during paper mode
       means a ticket/confirm bug, not execution slippage; investigate before
       continuing).
@@ -44,25 +44,17 @@ data) — this exercises the *process*, not the strategy (already validated in
       S&P 500, 4GLD/EGLN for gold). Pick one candidate per leg before going
       live (the tickets currently list both candidates — you decide which
       one your IBKR entity can actually trade, then that choice is fixed).
-- [ ] **IBKR**: decide how to express a macro SHORT signal (M1 is short on
-      GLD 27% / SPY 17% of days — see the `deployment/order_tickets.py`
-      `_macro_tickets` REVIEW ticket for exactly this case). CPD-1's venue
-      map never specified this — options: (a) IBKR margin short the UCITS
-      ETF, (b) an inverse ETF, (c) hold flat/cash on a macro short signal.
-      **Decision-support data (audit 2026-07-03, findings §84,
-      `research/macro_breadth/m1_longflat_results.json`, verified-clean data
-      draws):** M1's short legs LOST $486k over 2005→2026 in the engine's own
-      trades ledger (GLD −$333k over 72 trades, SPY −$153k over 68), and the
-      faithful long/flat expression (M1LF — option (c), modeled exactly as
-      "skip short tickets after the gross-exposure clip") beat full M1 on
-      every metric: full-window Sharpe 0.92 vs 0.61, maxDD −15.0% vs −19.6%,
-      forward-year Sharpe 1.43 vs 1.16. **Option (c) is the data-recommended
-      default** — also operationally simplest (no margin/borrow costs, no
-      inverse-ETF daily-reset decay). If you pick it, add `fwd_M1LF` to the
-      forward-validation ledger next to `fwd_M1` so the deployed expression
-      accrues its own append-only evidence. Until decided, every macro short
-      signal surfaces as a REVIEW ticket (the close of any existing long is
-      still ticketed normally — audit fix), never auto-executes.
+- [x] **Macro SHORT expression: DECIDED — option (c), hold flat/cash**
+      (2026-07-03, findings §84.3/§85). The engine evidence was one-sided:
+      M1's short legs LOST $486k over 2005→2026 (GLD −$333k/72 trades, SPY
+      −$153k/68), and the faithful long/flat expression beat full M1 on
+      every metric (full-window Sharpe 0.92 vs 0.61, maxDD −15.0% vs −19.6%,
+      forward-year 1.43 vs 1.16) while being operationally simplest (no
+      margin/borrow costs, no inverse-ETF daily-reset decay). Implemented as
+      the frozen `M1LF` expression (`forward_validation/frozen/M1LF/`,
+      forward-tracked as `fwd_M1LF` since 2026-07-03) inside the `cpd1_lf`
+      profile — no macro short ticket is ever generated. Full M1 remains the
+      frozen research reference with its own quarterly ledger row.
 - [ ] **Binance**: enable USDT-M futures; set isolated margin, 1x leverage,
       on BTCUSDT and SOLUSDT specifically (CPD-1 §B2).
 - [ ] **Binance**: confirm spot trading is enabled for BTCUSDT/SOLUSDT (longs

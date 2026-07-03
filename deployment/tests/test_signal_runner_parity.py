@@ -33,7 +33,10 @@ from deployment.signal_runner import (
 
 pytestmark = pytest.mark.integration
 
-STRATEGIES = ["ZA4", "M1"]
+# ZA4 + M1LF are the deployed cpd1_lf profile; M1 stays covered as the frozen
+# macro reference, ZD2 as the shadow strategy whose paper curve feeds the
+# forward arbitration.
+STRATEGIES = ["ZA4", "M1", "M1LF", "ZD2"]
 N_DAYS_CHECKED = 30
 
 

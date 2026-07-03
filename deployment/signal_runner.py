@@ -56,7 +56,15 @@ logger = logging.getLogger(__name__)
 # path and the quarterly ledger path are never subtly different windows.
 WARMUP_START = "2025-06-01"
 
-DEFAULT_STRATEGIES = ["ZA4", "M1"]
+
+def _default_strategies() -> list[str]:
+    """Deployed + shadow strategies from the active profile (cpd1_lf: ZA4,
+    M1LF, shadow ZD2). Shadow runs cost one extra subprocess backtest per day
+    and buy the forward-arbitration paper curve (findings §80.3's 'ZD2 vs ZA4
+    is the live question')."""
+    from deployment import profiles
+
+    return list(profiles.active_profile().all_strategies)
 
 # Conservative shared threshold across both crypto (trades 24/7, so any gap is
 # notable) and macro (weekends/holidays routinely produce 3-4 calendar-day
@@ -328,8 +336,9 @@ def write_state(state: SignalState) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--strategies", default=",".join(DEFAULT_STRATEGIES),
-        help="Comma-separated frozen strategy names (default: ZA4,M1)",
+        "--strategies", default=",".join(_default_strategies()),
+        help="Comma-separated frozen strategy names (default: the active "
+             "profile's deployed + shadow strategies)",
     )
     parser.add_argument("--as-of", default=None, help="YYYY-MM-DD (default: today UTC)")
     parser.add_argument(

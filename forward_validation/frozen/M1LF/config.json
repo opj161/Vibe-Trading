@@ -1,0 +1,27 @@
+{
+  "source": "auto",
+  "codes": [
+    "SPY.US",
+    "GLD.US"
+  ],
+  "start_date": "2005-01-01",
+  "end_date": "2026-06-29",
+  "interval": "1D",
+  "engine": "daily",
+  "initial_cash": 1000000,
+  "benchmark": "SPY.US",
+  "optimizer": null,
+  "optimizer_params": {},
+  "validation": {
+    "monte_carlo": {
+      "n_simulations": 1000
+    },
+    "bootstrap": {
+      "n_bootstrap": 1000,
+      "confidence": 0.95
+    },
+    "walk_forward": {
+      "n_windows": 4
+    }
+  }
+}

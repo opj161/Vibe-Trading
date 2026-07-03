@@ -46,6 +46,17 @@ _FALLBACK_FUTURES = {
 # flagged REVIEW, never silently skipped.
 FUNDING_REVIEW_THRESHOLD_ANNUAL = 0.15
 
+# Modeled taker-side fees for PAPER fills (GO_LIVE_CHECKLIST Phase 1: "fee =
+# the venue's modeled taker rate on the observed notional"). Binance regular-
+# tier spot 0.10% / USDT-M taker 0.05%; IBKR tiered ~0.05% (CPD-1 venue
+# assessment). Conservative round numbers, matching the crypto engine's own
+# 0.001 taker assumption.
+PAPER_FEE_RATES = {
+    "binance_spot": 0.0010,
+    "binance_usdtm": 0.0005,
+    "ibkr_ucits": 0.0005,
+}
+
 
 def to_binance_symbol(code: str) -> str:
     """"BTC-USDT" -> "BTCUSDT" (Binance's REST API takes no separator)."""

@@ -11,7 +11,12 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from deployment import hl_testnet_drill as drill
+# nautilus_trader is an optional extra (pyproject [nautilus]); environments
+# without it (e.g. the Ubuntu-VM daily-cycle host) must skip, not fail.
+drill = pytest.importorskip(
+    "deployment.hl_testnet_drill",
+    reason="nautilus_trader not installed (optional [nautilus] extra)",
+)
 
 
 class _FakeResponse:

@@ -141,3 +141,38 @@ def format_tracking_error_summary(cumulative_divergence_pct: float, quarter_tole
         f"Cumulative divergence this quarter: {cumulative_divergence_pct:.2f}% of equity "
         f"(tolerance {quarter_tolerance_pct:.1f}%) -- {status}"
     )
+
+
+def format_sleeve_drift_alert(
+    crypto_share_pct: float, target_crypto_share_pct: float, drift_pp: float
+) -> str:
+    return (
+        f"⚖️ <b>CPD-1 sleeve drift</b>\n"
+        f"Crypto sleeve is {crypto_share_pct:.1f}% of account vs target "
+        f"{target_crypto_share_pct:.1f}% ({drift_pp:+.1f}pp, >5pp tripwire) -- "
+        f"rebalance sleeves per the CPD-1 monthly/5pp rule."
+    )
+
+
+def format_daily_summary(
+    *,
+    as_of: str,
+    profile_name: str,
+    mode: str,
+    ticket_lines: list[str],
+    sleeve_equities: dict[str, float],
+    fired_checks: list[str],
+) -> str:
+    lines = [f"\U0001f5d3 <b>CPD-1 daily cycle {html.escape(as_of)}</b> "
+             f"[{html.escape(profile_name)}/{html.escape(mode)}]"]
+    if ticket_lines:
+        lines.append("Tickets:")
+        lines.extend(html.escape(t) for t in ticket_lines)
+    else:
+        lines.append("No tickets today (no direction changes).")
+    equity_bits = ", ".join(f"{s}: ${v:,.0f}" for s, v in sleeve_equities.items())
+    if equity_bits:
+        lines.append(f"Marked equity -- {equity_bits}")
+    if fired_checks:
+        lines.append("⚠️ Checks fired: " + ", ".join(html.escape(c) for c in fired_checks))
+    return "\n".join(lines)

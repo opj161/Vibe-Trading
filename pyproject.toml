@@ -57,6 +57,9 @@ dependencies = [
     "matplotlib>=3.7.0",
     "weasyprint>=60.0",
     "prompt_toolkit>=3.0.0",
+    # research/deribit_snapshot writes parquet via pandas; pyarrow is the
+    # engine pandas dispatches to (undeclared-dependency gap closed 2026-07-03).
+    "pyarrow>=14.0.0",
 ]
 
 [project.urls]
@@ -107,6 +110,12 @@ ashare = [
 ]
 harmonic = [
     "pyharmonics>=1.5.0",
+]
+nautilus = [
+    # Second engine for options research + the HL testnet drill / future
+    # target-executor (deployment/hl_testnet_drill.py). NOT needed by the
+    # daily deployment cycle.
+    "nautilus_trader>=2.0.0rc1",
 ]
 dingtalk = [
     "dingtalk-stream>=0.24.0",
